@@ -8,7 +8,7 @@ const state = {
   amount: "",
   weekOffset: 0,
   editingId: null,
-  data: loadData(),
+  data: ensureSchema(loadData()),
 };
 
 function loadData() {
@@ -16,7 +16,12 @@ function loadData() {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch (e) {}
-  return { entries: [], checkins: [] };
+  return { entries: [], checkins: [], expenses: [] };
+}
+
+function ensureSchema(d) {
+  if (!d.expenses) d.expenses = [];
+  return d;
 }
 
 function saveData() {
@@ -113,6 +118,24 @@ function renderRegister() {
         <button class="barber-box sami" data-action="select-barber" data-barber="Sami">Sami</button>
         <button class="barber-box amine" data-action="select-barber" data-barber="Amine">Amine</button>
       </div>
+      <button class="depense-btn" data-action="start-expense">Dépense</button>
+    </div>`;
+  }
+
+  if (state.view === "expense-amount") {
+    const display = state.amount ? state.amount : "0";
+    const empty = state.amount ? "" : "empty";
+    const editing = state.editingId ? " (editing)" : "";
+    return `<div class="screen">
+      <button class="back-btn" data-action="back-home">&larr; ${state.editingId ? "Cancel" : "Back"}</button>
+      <h2>Dépense — Amount?${editing}</h2>
+      <div class="amount-display ${empty}">${display}<span class="currency">€</span></div>
+      <div class="keypad">
+        ${[1,2,3,4,5,6,7,8,9].map(n => `<button class="key" data-action="key" data-key="${n}">${n}</button>`).join("")}
+        <button class="key del" data-action="key" data-key="del">⌫</button>
+        <button class="key" data-action="key" data-key="0">0</button>
+        <button class="key ok" data-action="confirm-expense">OK</button>
+      </div>
     </div>`;
   }
 
@@ -188,6 +211,8 @@ function renderCheckin() {
 function renderStats() {
   const { start, end } = getCurrentWeekRange();
   const weekEntries = state.data.entries.filter((e) => e.time >= start && e.time < end);
+  const weekExpenses = state.data.expenses.filter((e) => e.time >= start && e.time < end);
+  const expensesTotal = weekExpenses.reduce((s, e) => s + e.amount, 0);
 
   const stats = {};
   for (const b of BARBERS) {
@@ -221,24 +246,48 @@ function renderStats() {
   }
   html += `</div>`;
 
-  const sorted = [...weekEntries].sort((a, b) => b.time - a.time);
-  html += `<div class="history"><h3>This week's entries (${sorted.length})</h3>`;
-  if (sorted.length === 0) {
+  html += `<div class="stat-card" style="margin-bottom:12px">
+    <h3>Dépenses</h3>
+    <div class="row"><span class="label">Count</span><span class="value">${weekExpenses.length}</span></div>
+    <div class="row total"><span class="label">Total</span><span class="value">-${expensesTotal}€</span></div>
+  </div>`;
+
+  const merged = [
+    ...weekEntries.map((e) => ({ ...e, kind: "entry" })),
+    ...weekExpenses.map((e) => ({ ...e, kind: "expense" })),
+  ].sort((a, b) => b.time - a.time);
+
+  html += `<div class="history"><h3>This week's activity (${merged.length})</h3>`;
+  if (merged.length === 0) {
     html += `<div style="text-align:center;color:#64748b;padding:20px">No entries yet</div>`;
   } else {
-    for (const e of sorted) {
-      html += `<div class="entry">
-        <div>
-          <span class="who">${e.barber}</span>
-          <span class="meta">${formatDay(e.time)} ${formatTime(e.time)}</span>
-        </div>
-        <div>
-          <span class="amt">${e.amount}€</span>
-          <span class="pay ${e.method}">${e.method}</span>
-          <button class="edit-btn" data-action="edit-entry" data-id="${e.id}" title="Edit">✎</button>
-          <button class="del-btn" data-action="delete-entry" data-id="${e.id}" title="Delete">×</button>
-        </div>
-      </div>`;
+    for (const e of merged) {
+      if (e.kind === "expense") {
+        html += `<div class="entry expense-entry">
+          <div>
+            <span class="who">Dépense</span>
+            <span class="meta">${formatDay(e.time)} ${formatTime(e.time)}</span>
+          </div>
+          <div>
+            <span class="amt expense-amt">-${e.amount}€</span>
+            <button class="edit-btn" data-action="edit-entry" data-kind="expense" data-id="${e.id}" title="Edit">✎</button>
+            <button class="del-btn" data-action="delete-entry" data-kind="expense" data-id="${e.id}" title="Delete">×</button>
+          </div>
+        </div>`;
+      } else {
+        html += `<div class="entry">
+          <div>
+            <span class="who">${e.barber}</span>
+            <span class="meta">${formatDay(e.time)} ${formatTime(e.time)}</span>
+          </div>
+          <div>
+            <span class="amt">${e.amount}€</span>
+            <span class="pay ${e.method}">${e.method}</span>
+            <button class="edit-btn" data-action="edit-entry" data-id="${e.id}" title="Edit">✎</button>
+            <button class="del-btn" data-action="delete-entry" data-id="${e.id}" title="Delete">×</button>
+          </div>
+        </div>`;
+      }
     }
   }
   html += `</div></div>`;
@@ -270,6 +319,37 @@ function handleAction(action, data) {
       state.view = "amount";
       render();
       break;
+    case "start-expense":
+      state.amount = "";
+      state.view = "expense-amount";
+      render();
+      break;
+    case "confirm-expense": {
+      const amt = parseInt(state.amount, 10);
+      if (!amt || amt <= 0) return;
+      if (state.editingId) {
+        const exp = state.data.expenses.find((e) => e.id === state.editingId);
+        if (exp) {
+          exp.amount = amt;
+          saveData();
+          showToast(`Expense updated: ${amt}€`);
+        }
+        state.editingId = null;
+        state.tab = "stats";
+      } else {
+        state.data.expenses.push({
+          id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+          amount: amt,
+          time: Date.now(),
+        });
+        saveData();
+        showToast(`Expense saved: ${amt}€`);
+      }
+      state.view = "home";
+      state.amount = "";
+      render();
+      break;
+    }
     case "back-home":
       if (state.editingId) {
         state.editingId = null;
@@ -353,12 +433,26 @@ function handleAction(action, data) {
       break;
     case "delete-entry":
       if (confirm("Delete this entry?")) {
-        state.data.entries = state.data.entries.filter((e) => e.id !== data.id);
+        if (data.kind === "expense") {
+          state.data.expenses = state.data.expenses.filter((e) => e.id !== data.id);
+        } else {
+          state.data.entries = state.data.entries.filter((e) => e.id !== data.id);
+        }
         saveData();
         render();
       }
       break;
     case "edit-entry": {
+      if (data.kind === "expense") {
+        const exp = state.data.expenses.find((e) => e.id === data.id);
+        if (!exp) return;
+        state.editingId = exp.id;
+        state.amount = String(exp.amount);
+        state.tab = "register";
+        state.view = "expense-amount";
+        render();
+        return;
+      }
       const entry = state.data.entries.find((e) => e.id === data.id);
       if (!entry) return;
       state.editingId = entry.id;
