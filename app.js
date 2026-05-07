@@ -7,6 +7,7 @@ const state = {
   selectedBarber: null,
   amount: "",
   weekOffset: 0,
+  editingId: null,
   data: loadData(),
 };
 
@@ -118,9 +119,10 @@ function renderRegister() {
   if (state.view === "amount") {
     const display = state.amount ? state.amount : "0";
     const empty = state.amount ? "" : "empty";
+    const editing = state.editingId ? " (editing)" : "";
     return `<div class="screen">
-      <button class="back-btn" data-action="back-home">&larr; Back</button>
-      <h2>${state.selectedBarber} — Amount?</h2>
+      <button class="back-btn" data-action="back-home">&larr; ${state.editingId ? "Cancel" : "Back"}</button>
+      <h2>${state.selectedBarber} — Amount?${editing}</h2>
       <div class="amount-display ${empty}">${display}<span class="currency">€</span></div>
       <div class="keypad">
         ${[1,2,3,4,5,6,7,8,9].map(n => `<button class="key" data-action="key" data-key="${n}">${n}</button>`).join("")}
@@ -132,9 +134,10 @@ function renderRegister() {
   }
 
   if (state.view === "payment") {
+    const editing = state.editingId ? " (editing)" : "";
     return `<div class="screen">
       <button class="back-btn" data-action="back-amount">&larr; Back</button>
-      <h2>${state.selectedBarber} — ${state.amount}€ — Payment?</h2>
+      <h2>${state.selectedBarber} — ${state.amount}€ — Payment?${editing}</h2>
       <div class="payment">
         <button class="pay-box esp" data-action="pay" data-method="ESP">
           ESP<span class="label">Cash</span>
@@ -232,6 +235,7 @@ function renderStats() {
         <div>
           <span class="amt">${e.amount}€</span>
           <span class="pay ${e.method}">${e.method}</span>
+          <button class="edit-btn" data-action="edit-entry" data-id="${e.id}" title="Edit">✎</button>
           <button class="del-btn" data-action="delete-entry" data-id="${e.id}" title="Delete">×</button>
         </div>
       </div>`;
@@ -248,6 +252,7 @@ function attachHandlers() {
       state.view = "home";
       state.selectedBarber = null;
       state.amount = "";
+      state.editingId = null;
       render();
     });
   });
@@ -266,6 +271,10 @@ function handleAction(action, data) {
       render();
       break;
     case "back-home":
+      if (state.editingId) {
+        state.editingId = null;
+        state.tab = "stats";
+      }
       state.view = "home";
       state.selectedBarber = null;
       state.amount = "";
@@ -291,16 +300,28 @@ function handleAction(action, data) {
       }
       break;
     case "pay": {
-      const entry = {
-        id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
-        barber: state.selectedBarber,
-        amount: parseInt(state.amount, 10),
-        method: data.method,
-        time: Date.now(),
-      };
-      state.data.entries.push(entry);
-      saveData();
-      showToast(`Saved: ${entry.barber} ${entry.amount}€ ${entry.method}`);
+      if (state.editingId) {
+        const entry = state.data.entries.find((e) => e.id === state.editingId);
+        if (entry) {
+          entry.amount = parseInt(state.amount, 10);
+          entry.method = data.method;
+          saveData();
+          showToast(`Updated: ${entry.barber} ${entry.amount}€ ${entry.method}`);
+        }
+        state.editingId = null;
+        state.tab = "stats";
+      } else {
+        const entry = {
+          id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+          barber: state.selectedBarber,
+          amount: parseInt(state.amount, 10),
+          method: data.method,
+          time: Date.now(),
+        };
+        state.data.entries.push(entry);
+        saveData();
+        showToast(`Saved: ${entry.barber} ${entry.amount}€ ${entry.method}`);
+      }
       state.view = "home";
       state.selectedBarber = null;
       state.amount = "";
@@ -337,6 +358,17 @@ function handleAction(action, data) {
         render();
       }
       break;
+    case "edit-entry": {
+      const entry = state.data.entries.find((e) => e.id === data.id);
+      if (!entry) return;
+      state.editingId = entry.id;
+      state.selectedBarber = entry.barber;
+      state.amount = String(entry.amount);
+      state.tab = "register";
+      state.view = "amount";
+      render();
+      break;
+    }
   }
 }
 

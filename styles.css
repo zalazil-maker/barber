@@ -196,6 +196,7 @@ header h1 {
 .entry .pay.ESP { background: #14532d; }
 .entry .pay.CB { background: #1e3a8a; }
 .entry .del-btn { background: none; border: none; color: #ef4444; cursor: pointer; font-size: 16px; padding: 0 6px; }
+.entry .edit-btn { background: none; border: none; color: #60a5fa; cursor: pointer; font-size: 14px; padding: 0 6px; margin-left: 4px; }
 
 .toast {
   position: fixed;
