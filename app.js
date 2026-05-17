@@ -1,6 +1,6 @@
 const BARBERS = ["Sami", "Amine"];
 // Set by the setup: the Cloudflare worker address that safely talks to Neon.
-const WORKER_URL = "__WORKER_URL__";
+const WORKER_URL = "https://barbershop.ezalazil.workers.dev";
 const EVENTS_KEY = "barbershop_events_v1";
 const PENDING_KEY = "barbershop_pending_v1";
 
