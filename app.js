@@ -1,5 +1,8 @@
 const BARBERS = ["Sami", "Amine"];
-const STORAGE_KEY = "barbershop_data_v1";
+const API_URL =
+  "https://ep-lucky-tree-ald8hm9n.apirest.c-3.eu-central-1.aws.neon.tech/neondb/rest/v1";
+const EVENTS_KEY = "barbershop_events_v1";
+const PENDING_KEY = "barbershop_pending_v1";
 
 const state = {
   view: "home",
@@ -8,24 +11,160 @@ const state = {
   amount: "",
   weekOffset: 0,
   editingId: null,
-  data: ensureSchema(loadData()),
+  sync: "idle", // idle | syncing | offline
+  events: loadCache(),
+  pending: loadPending(),
+  data: { entries: [], checkins: [], expenses: [] },
 };
 
-function loadData() {
+function loadCache() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(EVENTS_KEY);
     if (raw) return JSON.parse(raw);
   } catch (e) {}
-  return { entries: [], checkins: [], expenses: [] };
+  return [];
+}
+function saveCache() {
+  localStorage.setItem(EVENTS_KEY, JSON.stringify(state.events));
+}
+function loadPending() {
+  try {
+    const raw = localStorage.getItem(PENDING_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) {}
+  return [];
+}
+function savePending() {
+  localStorage.setItem(PENDING_KEY, JSON.stringify(state.pending));
 }
 
-function ensureSchema(d) {
-  if (!d.expenses) d.expenses = [];
-  return d;
+function rebuildData() {
+  const d = { entries: [], checkins: [], expenses: [] };
+  for (const e of state.events) {
+    const time = Number(e.ts);
+    if (e.type === "entry")
+      d.entries.push({ id: e.id, barber: e.barber, amount: e.amount, method: e.method, time });
+    else if (e.type === "expense")
+      d.expenses.push({ id: e.id, amount: e.amount, time });
+    else if (e.type === "checkin")
+      d.checkins.push({ id: e.id, barber: e.barber, time });
+  }
+  state.data = d;
 }
 
-function saveData() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state.data));
+function localInsert(row) {
+  state.events.push(row);
+  saveCache();
+  state.pending.push({ op: "insert", row });
+  savePending();
+  rebuildData();
+}
+function localUpdate(id, patch) {
+  const ev = state.events.find((e) => e.id === id);
+  if (ev) Object.assign(ev, patch);
+  saveCache();
+  state.pending.push({ op: "update", id, patch });
+  savePending();
+  rebuildData();
+}
+function localDelete(id) {
+  state.events = state.events.filter((e) => e.id !== id);
+  saveCache();
+  state.pending.push({ op: "delete", id });
+  savePending();
+  rebuildData();
+}
+
+async function flushPending() {
+  while (state.pending.length) {
+    const job = state.pending[0];
+    try {
+      let res;
+      if (job.op === "insert") {
+        res = await fetch(`${API_URL}/events`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify(job.row),
+        });
+        // 409 = row already inserted on a previous (lost) response; treat as done
+        if (!res.ok && res.status !== 409) throw new Error("insert " + res.status);
+      } else if (job.op === "update") {
+        res = await fetch(`${API_URL}/events?id=eq.${encodeURIComponent(job.id)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
+          body: JSON.stringify(job.patch),
+        });
+        if (!res.ok) throw new Error("update " + res.status);
+      } else if (job.op === "delete") {
+        res = await fetch(`${API_URL}/events?id=eq.${encodeURIComponent(job.id)}`, {
+          method: "DELETE",
+          headers: { Prefer: "return=minimal" },
+        });
+        if (!res.ok) throw new Error("delete " + res.status);
+      }
+      state.pending.shift();
+      savePending();
+    } catch (err) {
+      return false;
+    }
+  }
+  return true;
+}
+
+async function fetchAll() {
+  const res = await fetch(`${API_URL}/events?select=*&order=ts.desc&limit=5000`, {
+    headers: { Accept: "application/json" },
+  });
+  if (!res.ok) throw new Error("fetch " + res.status);
+  const rows = await res.json();
+  state.events = rows.map((r) => ({
+    id: r.id,
+    type: r.type,
+    barber: r.barber,
+    amount: r.amount,
+    method: r.method,
+    ts: Number(r.ts),
+  }));
+  saveCache();
+  rebuildData();
+}
+
+let syncing = false;
+async function syncNow() {
+  if (syncing) return;
+  syncing = true;
+  setSync("syncing");
+  try {
+    const flushed = await flushPending();
+    if (flushed === false) {
+      setSync("offline");
+      return;
+    }
+    await fetchAll();
+    setSync("idle");
+    if (!isMidEntry()) render();
+  } catch (err) {
+    setSync("offline");
+  } finally {
+    syncing = false;
+  }
+}
+
+function isMidEntry() {
+  return (
+    state.tab === "register" &&
+    (state.view === "amount" || state.view === "payment" || state.view === "expense-amount")
+  );
+}
+
+function setSync(s) {
+  state.sync = s;
+  const badge = document.getElementById("sync-badge");
+  if (badge) {
+    badge.className = "sync-badge " + s;
+    badge.textContent =
+      s === "syncing" ? "Syncing…" : s === "offline" ? "Offline – will retry" : "Synced";
+  }
 }
 
 function startOfWeek(date) {
@@ -36,34 +175,29 @@ function startOfWeek(date) {
   d.setHours(0, 0, 0, 0);
   return d;
 }
-
 function endOfWeek(date) {
   const d = startOfWeek(date);
   d.setDate(d.getDate() + 7);
   return d;
 }
-
 function formatDate(ts) {
-  const d = new Date(ts);
-  return d.toLocaleDateString(undefined, { day: "2-digit", month: "short" });
+  return new Date(ts).toLocaleDateString(undefined, { day: "2-digit", month: "short" });
 }
-
 function formatTime(ts) {
-  const d = new Date(ts);
-  return d.toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
+  return new Date(ts).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit" });
 }
-
 function formatDay(ts) {
-  const d = new Date(ts);
-  return d.toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" });
+  return new Date(ts).toLocaleDateString(undefined, {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+  });
 }
-
 function getCurrentWeekRange() {
   const now = new Date();
   now.setDate(now.getDate() + state.weekOffset * 7);
   return { start: startOfWeek(now).getTime(), end: endOfWeek(now).getTime() };
 }
-
 function getWeekLabel() {
   const { start, end } = getCurrentWeekRange();
   const endDisplay = new Date(end - 1);
@@ -71,13 +205,11 @@ function getWeekLabel() {
   if (state.weekOffset === -1) return `Last week (${formatDate(start)} - ${formatDate(endDisplay)})`;
   return `${formatDate(start)} - ${formatDate(endDisplay)}`;
 }
-
 function todayKey(ts = Date.now()) {
   const d = new Date(ts);
   d.setHours(0, 0, 0, 0);
   return d.getTime();
 }
-
 function checkinToday(barber) {
   return state.data.checkins.find(
     (c) => c.barber === barber && todayKey(c.time) === todayKey()
@@ -92,9 +224,18 @@ function showToast(message) {
   setTimeout(() => toast.remove(), 1800);
 }
 
+function newId() {
+  return Date.now() + "-" + Math.random().toString(36).slice(2, 7);
+}
+
 function render() {
   const root = document.getElementById("app");
-  let html = `<header><h1>Barbershop</h1></header>`;
+  let html = `<header>
+    <h1>Barbershop</h1>
+    <button id="sync-badge" class="sync-badge ${state.sync}" data-action="sync">${
+    state.sync === "syncing" ? "Syncing…" : state.sync === "offline" ? "Offline – will retry" : "Synced"
+  }</button>
+  </header>`;
 
   html += `<div class="tabs">
     <button class="tab ${state.tab === "register" ? "active" : ""}" data-tab="register">Register</button>
@@ -303,6 +444,7 @@ function attachHandlers() {
       state.amount = "";
       state.editingId = null;
       render();
+      if (state.tab === "stats" || state.tab === "checkin") syncNow();
     });
   });
 
@@ -313,6 +455,9 @@ function attachHandlers() {
 
 function handleAction(action, data) {
   switch (action) {
+    case "sync":
+      syncNow();
+      break;
     case "select-barber":
       state.selectedBarber = data.barber;
       state.amount = "";
@@ -328,26 +473,18 @@ function handleAction(action, data) {
       const amt = parseInt(state.amount, 10);
       if (!amt || amt <= 0) return;
       if (state.editingId) {
-        const exp = state.data.expenses.find((e) => e.id === state.editingId);
-        if (exp) {
-          exp.amount = amt;
-          saveData();
-          showToast(`Expense updated: ${amt}€`);
-        }
+        localUpdate(state.editingId, { amount: amt });
+        showToast(`Expense updated: ${amt}€`);
         state.editingId = null;
         state.tab = "stats";
       } else {
-        state.data.expenses.push({
-          id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
-          amount: amt,
-          time: Date.now(),
-        });
-        saveData();
+        localInsert({ id: newId(), type: "expense", amount: amt, ts: Date.now() });
         showToast(`Expense saved: ${amt}€`);
       }
       state.view = "home";
       state.amount = "";
       render();
+      syncNow();
       break;
     }
     case "back-home":
@@ -381,44 +518,37 @@ function handleAction(action, data) {
       break;
     case "pay": {
       if (state.editingId) {
-        const entry = state.data.entries.find((e) => e.id === state.editingId);
-        if (entry) {
-          entry.amount = parseInt(state.amount, 10);
-          entry.method = data.method;
-          saveData();
-          showToast(`Updated: ${entry.barber} ${entry.amount}€ ${entry.method}`);
-        }
+        localUpdate(state.editingId, {
+          amount: parseInt(state.amount, 10),
+          method: data.method,
+        });
+        showToast(`Updated: ${state.amount}€ ${data.method}`);
         state.editingId = null;
         state.tab = "stats";
       } else {
-        const entry = {
-          id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
+        localInsert({
+          id: newId(),
+          type: "entry",
           barber: state.selectedBarber,
           amount: parseInt(state.amount, 10),
           method: data.method,
-          time: Date.now(),
-        };
-        state.data.entries.push(entry);
-        saveData();
-        showToast(`Saved: ${entry.barber} ${entry.amount}€ ${entry.method}`);
+          ts: Date.now(),
+        });
+        showToast(`Saved: ${state.selectedBarber} ${state.amount}€ ${data.method}`);
       }
       state.view = "home";
       state.selectedBarber = null;
       state.amount = "";
       render();
+      syncNow();
       break;
     }
     case "checkin": {
-      const existing = checkinToday(data.barber);
-      if (existing) return;
-      state.data.checkins.push({
-        id: Date.now() + "-" + Math.random().toString(36).slice(2, 7),
-        barber: data.barber,
-        time: Date.now(),
-      });
-      saveData();
+      if (checkinToday(data.barber)) return;
+      localInsert({ id: newId(), type: "checkin", barber: data.barber, ts: Date.now() });
       showToast(`${data.barber} checked in at ${formatTime(Date.now())}`);
       render();
+      syncNow();
       break;
     }
     case "week-prev":
@@ -433,13 +563,9 @@ function handleAction(action, data) {
       break;
     case "delete-entry":
       if (confirm("Delete this entry?")) {
-        if (data.kind === "expense") {
-          state.data.expenses = state.data.expenses.filter((e) => e.id !== data.id);
-        } else {
-          state.data.entries = state.data.entries.filter((e) => e.id !== data.id);
-        }
-        saveData();
+        localDelete(data.id);
         render();
+        syncNow();
       }
       break;
     case "edit-entry": {
@@ -466,4 +592,11 @@ function handleAction(action, data) {
   }
 }
 
+rebuildData();
 render();
+syncNow();
+setInterval(syncNow, 20000);
+window.addEventListener("online", syncNow);
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) syncNow();
+});

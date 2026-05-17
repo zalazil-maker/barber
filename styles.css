@@ -25,6 +25,17 @@ header h1 {
   font-size: 22px;
   letter-spacing: 0.5px;
 }
+.sync-badge {
+  border: none;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  cursor: pointer;
+  color: #fff;
+}
+.sync-badge.idle { background: #166534; }
+.sync-badge.syncing { background: #854d0e; }
+.sync-badge.offline { background: #7f1d1d; }
 .tabs {
   display: flex;
   gap: 8px;
