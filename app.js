@@ -1,6 +1,6 @@
 const BARBERS = ["Sami", "Amine"];
-const API_URL =
-  "https://ep-lucky-tree-ald8hm9n.apirest.c-3.eu-central-1.aws.neon.tech/neondb/rest/v1";
+// Set by the setup: the Cloudflare worker address that safely talks to Neon.
+const WORKER_URL = "__WORKER_URL__";
 const EVENTS_KEY = "barbershop_events_v1";
 const PENDING_KEY = "barbershop_pending_v1";
 
@@ -75,32 +75,26 @@ function localDelete(id) {
   rebuildData();
 }
 
+async function postWorker(payload) {
+  const res = await fetch(WORKER_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) throw new Error("worker " + res.status);
+  return res.json();
+}
+
 async function flushPending() {
   while (state.pending.length) {
     const job = state.pending[0];
     try {
-      let res;
       if (job.op === "insert") {
-        res = await fetch(`${API_URL}/events`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify(job.row),
-        });
-        // 409 = row already inserted on a previous (lost) response; treat as done
-        if (!res.ok && res.status !== 409) throw new Error("insert " + res.status);
+        await postWorker({ op: "insert", row: job.row });
       } else if (job.op === "update") {
-        res = await fetch(`${API_URL}/events?id=eq.${encodeURIComponent(job.id)}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json", Prefer: "return=minimal" },
-          body: JSON.stringify(job.patch),
-        });
-        if (!res.ok) throw new Error("update " + res.status);
+        await postWorker({ op: "update", id: job.id, patch: job.patch });
       } else if (job.op === "delete") {
-        res = await fetch(`${API_URL}/events?id=eq.${encodeURIComponent(job.id)}`, {
-          method: "DELETE",
-          headers: { Prefer: "return=minimal" },
-        });
-        if (!res.ok) throw new Error("delete " + res.status);
+        await postWorker({ op: "delete", id: job.id });
       }
       state.pending.shift();
       savePending();
@@ -112,16 +106,14 @@ async function flushPending() {
 }
 
 async function fetchAll() {
-  const res = await fetch(`${API_URL}/events?select=*&order=ts.desc&limit=5000`, {
-    headers: { Accept: "application/json" },
-  });
+  const res = await fetch(WORKER_URL, { method: "GET" });
   if (!res.ok) throw new Error("fetch " + res.status);
   const rows = await res.json();
   state.events = rows.map((r) => ({
     id: r.id,
     type: r.type,
     barber: r.barber,
-    amount: r.amount,
+    amount: r.amount == null ? null : Number(r.amount),
     method: r.method,
     ts: Number(r.ts),
   }));
