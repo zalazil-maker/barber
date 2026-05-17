@@ -14,7 +14,7 @@ const state = {
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
   pending: loadPending(),
-  data: { entries: [], checkins: [], expenses: [] },
+  data: { entries: [], checkins: [], expenses: [], deleted: [] },
 };
 
 function loadCache() {
@@ -39,9 +39,21 @@ function savePending() {
 }
 
 function rebuildData() {
-  const d = { entries: [], checkins: [], expenses: [] };
+  const d = { entries: [], checkins: [], expenses: [], deleted: [] };
   for (const e of state.events) {
     const time = Number(e.ts);
+    if (e.deleted_at) {
+      d.deleted.push({
+        id: e.id,
+        type: e.type,
+        barber: e.barber,
+        amount: e.amount,
+        method: e.method,
+        time,
+        deletedAt: e.deleted_at,
+      });
+      continue;
+    }
     if (e.type === "entry")
       d.entries.push({ id: e.id, barber: e.barber, amount: e.amount, method: e.method, time });
     else if (e.type === "expense")
@@ -68,7 +80,8 @@ function localUpdate(id, patch) {
   rebuildData();
 }
 function localDelete(id) {
-  state.events = state.events.filter((e) => e.id !== id);
+  const ev = state.events.find((e) => e.id === id);
+  if (ev) ev.deleted_at = new Date().toISOString();
   saveCache();
   state.pending.push({ op: "delete", id });
   savePending();
@@ -116,6 +129,7 @@ async function fetchAll() {
     amount: r.amount == null ? null : Number(r.amount),
     method: r.method,
     ts: Number(r.ts),
+    deleted_at: r.deleted_at || null,
   }));
   saveCache();
   rebuildData();
@@ -423,7 +437,39 @@ function renderStats() {
       }
     }
   }
-  html += `</div></div>`;
+  html += `</div>`;
+
+  const weekDeleted = state.data.deleted
+    .filter((e) => e.time >= start && e.time < end)
+    .sort((a, b) => new Date(b.deletedAt) - new Date(a.deletedAt));
+  if (weekDeleted.length) {
+    html += `<div class="history deleted-history"><h3>Deleted this week (${weekDeleted.length}) — trace only</h3>`;
+    for (const e of weekDeleted) {
+      const label = e.type === "expense" ? "Dépense" : e.barber || e.type;
+      const amt =
+        e.type === "expense"
+          ? `-${e.amount}€`
+          : e.amount != null
+          ? `${e.amount}€`
+          : "";
+      const pay =
+        e.type === "entry" && e.method
+          ? `<span class="pay ${e.method}">${e.method}</span>`
+          : "";
+      const delTs = new Date(e.deletedAt).getTime();
+      html += `<div class="entry deleted-entry">
+        <div>
+          <span class="who">${label}</span>
+          <span class="meta">${formatDay(e.time)} ${formatTime(e.time)}</span>
+          <div class="meta removed">removed ${formatDay(delTs)} ${formatTime(delTs)}</div>
+        </div>
+        <div><span class="amt">${amt}</span> ${pay}</div>
+      </div>`;
+    }
+    html += `</div>`;
+  }
+
+  html += `</div>`;
   return html;
 }
 

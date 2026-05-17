@@ -79,7 +79,7 @@ export default {
     try {
       if (request.method === "GET") {
         const out = await q(
-          "select id, type, barber, amount, method, ts from events order by ts desc limit 5000"
+          "select id, type, barber, amount, method, ts, deleted_at from events order by ts desc limit 5000"
         );
         return json(out.rows || []);
       }
@@ -122,7 +122,8 @@ export default {
         }
 
         if (body.op === "delete") {
-          await q("delete from events where id=$1", [body.id]);
+          // soft delete — keep the row so the owner always has a trace
+          await q("update events set deleted_at = now() where id=$1", [body.id]);
           return json({ ok: true });
         }
 
