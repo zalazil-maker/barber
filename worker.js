@@ -18,13 +18,23 @@ function json(body, status = 200) {
   });
 }
 
+function cleanConnString(s) {
+  if (!s) return "";
+  s = String(s).trim();
+  s = s.replace(/^psql\s+/i, "");                // strip leading "psql "
+  s = s.replace(/^['"]+|['"]+$/g, "");           // strip surrounding quotes
+  s = s.replace(/^[A-Za-z_][A-Za-z0-9_]*=/, ""); // strip "DATABASE_URL=" prefix
+  s = s.replace(/^['"]+|['"]+$/g, "");           // strip quotes again
+  return s.trim();
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS });
     }
 
-    const connectionString = env.DATABASE_URL;
+    const connectionString = cleanConnString(env.DATABASE_URL);
     if (!connectionString) {
       return json({ error: "DATABASE_URL secret is not set" }, 500);
     }
@@ -33,7 +43,19 @@ export default {
     // exactly how the Neon serverless driver does it.
     let sqlUrl;
     try {
-      const host = new URL(connectionString).hostname;
+      let host;
+      try {
+        host = new URL(connectionString).hostname;
+      } catch (e) {
+        const m = connectionString.match(/@([^/:?]+)/);
+        if (m) host = m[1];
+      }
+      if (!host) {
+        return json(
+          { error: "Bad DATABASE_URL format", starts_with: connectionString.slice(0, 13) },
+          500
+        );
+      }
       const apiHost = host.replace(/^[^.]+\./, "api.");
       sqlUrl = "https://" + apiHost + "/sql";
     } catch (e) {
