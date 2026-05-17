@@ -224,6 +224,37 @@ header h1 {
 .entry .edit-btn { background: none; border: none; color: #60a5fa; cursor: pointer; font-size: 14px; padding: 0 6px; margin-left: 4px; }
 .entry.expense-entry { background: rgba(217, 119, 6, 0.08); border-radius: 6px; }
 .entry .expense-amt { color: #f59e0b; }
+.coupon-btn {
+  width: 100%;
+  padding: 14px;
+  margin-bottom: 12px;
+  background: #1e293b;
+  color: #cbd5e1;
+  border: 2px solid #334155;
+  border-radius: 12px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.coupon-btn.on {
+  background: linear-gradient(135deg, #14532d, #22c55e);
+  color: #fff;
+  border-color: #22c55e;
+}
+.amount-display .struck {
+  text-decoration: line-through;
+  color: #64748b;
+  font-size: 28px;
+  margin-right: 8px;
+}
+.coupon-tag {
+  font-size: 11px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-left: 6px;
+  background: #14532d;
+  color: #86efac;
+}
 .deleted-history { margin-top: 12px; border: 1px dashed #475569; }
 .deleted-history h3 { color: #ef4444; }
 .entry.deleted-entry { opacity: 0.65; }

@@ -79,7 +79,7 @@ export default {
     try {
       if (request.method === "GET") {
         const out = await q(
-          "select id, type, barber, amount, method, ts, deleted_at from events order by ts desc limit 5000"
+          "select id, type, barber, amount, method, ts, deleted_at, coupon from events order by ts desc limit 5000"
         );
         return json(out.rows || []);
       }
@@ -90,8 +90,8 @@ export default {
         if (body.op === "insert") {
           const r = body.row || {};
           await q(
-            "insert into events (id, type, barber, amount, method, ts) " +
-              "values ($1,$2,$3,$4,$5,$6) on conflict (id) do nothing",
+            "insert into events (id, type, barber, amount, method, ts, coupon) " +
+              "values ($1,$2,$3,$4,$5,$6,$7) on conflict (id) do nothing",
             [
               r.id,
               r.type,
@@ -99,6 +99,7 @@ export default {
               r.amount ?? null,
               r.method ?? null,
               r.ts,
+              r.coupon === true,
             ]
           );
           return json({ ok: true });
@@ -106,18 +107,22 @@ export default {
 
         if (body.op === "update") {
           const p = body.patch || {};
+          const sets = ["amount=$1"];
+          const vals = [p.amount];
+          let i = 2;
           if (p.method !== undefined) {
-            await q("update events set amount=$1, method=$2 where id=$3", [
-              p.amount,
-              p.method,
-              body.id,
-            ]);
-          } else {
-            await q("update events set amount=$1 where id=$2", [
-              p.amount,
-              body.id,
-            ]);
+            sets.push("method=$" + i++);
+            vals.push(p.method);
           }
+          if (p.coupon !== undefined) {
+            sets.push("coupon=$" + i++);
+            vals.push(p.coupon === true);
+          }
+          vals.push(body.id);
+          await q(
+            "update events set " + sets.join(", ") + " where id=$" + i,
+            vals
+          );
           return json({ ok: true });
         }
 

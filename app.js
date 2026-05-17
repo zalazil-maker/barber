@@ -11,6 +11,7 @@ const state = {
   amount: "",
   weekOffset: 0,
   editingId: null,
+  coupon: false,
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
   pending: loadPending(),
@@ -49,13 +50,21 @@ function rebuildData() {
         barber: e.barber,
         amount: e.amount,
         method: e.method,
+        coupon: !!e.coupon,
         time,
         deletedAt: e.deleted_at,
       });
       continue;
     }
     if (e.type === "entry")
-      d.entries.push({ id: e.id, barber: e.barber, amount: e.amount, method: e.method, time });
+      d.entries.push({
+        id: e.id,
+        barber: e.barber,
+        amount: e.amount,
+        method: e.method,
+        coupon: !!e.coupon,
+        time,
+      });
     else if (e.type === "expense")
       d.expenses.push({ id: e.id, amount: e.amount, time });
     else if (e.type === "checkin")
@@ -130,6 +139,7 @@ async function fetchAll() {
     method: r.method,
     ts: Number(r.ts),
     deleted_at: r.deleted_at || null,
+    coupon: r.coupon === true || r.coupon === "t" || r.coupon === "true",
   }));
   saveCache();
   rebuildData();
@@ -287,13 +297,22 @@ function renderRegister() {
   }
 
   if (state.view === "amount") {
-    const display = state.amount ? state.amount : "0";
     const empty = state.amount ? "" : "empty";
     const editing = state.editingId ? " (editing)" : "";
+    const isEdit = !!state.editingId;
+    const raw = parseInt(state.amount || "0", 10);
+    const finalAmt = !isEdit && state.coupon ? Math.round(raw * 0.8) : raw;
+    const amountInner =
+      !isEdit && state.coupon && raw > 0
+        ? `<span class="struck">${raw}</span> ${finalAmt}<span class="currency">€</span>`
+        : `${state.amount ? state.amount : "0"}<span class="currency">€</span>`;
     return `<div class="screen">
       <button class="back-btn" data-action="back-home">&larr; ${state.editingId ? "Cancel" : "Back"}</button>
       <h2>${state.selectedBarber} — Amount?${editing}</h2>
-      <div class="amount-display ${empty}">${display}<span class="currency">€</span></div>
+      <div class="amount-display ${empty}">${amountInner}</div>
+      <button class="coupon-btn ${state.coupon ? "on" : ""}" data-action="toggle-coupon">
+        ${state.coupon ? "✓ Coupon −20% applied" : "Coupon −20%"}
+      </button>
       <div class="keypad">
         ${[1,2,3,4,5,6,7,8,9].map(n => `<button class="key" data-action="key" data-key="${n}">${n}</button>`).join("")}
         <button class="key del" data-action="key" data-key="del">⌫</button>
@@ -305,9 +324,13 @@ function renderRegister() {
 
   if (state.view === "payment") {
     const editing = state.editingId ? " (editing)" : "";
+    const isEdit = !!state.editingId;
+    const raw = parseInt(state.amount || "0", 10);
+    const finalAmt = !isEdit && state.coupon ? Math.round(raw * 0.8) : raw;
+    const couponNote = state.coupon ? ` (coupon −20%)` : "";
     return `<div class="screen">
       <button class="back-btn" data-action="back-amount">&larr; Back</button>
-      <h2>${state.selectedBarber} — ${state.amount}€ — Payment?${editing}</h2>
+      <h2>${state.selectedBarber} — ${finalAmt}€${couponNote} — Payment?${editing}</h2>
       <div class="payment">
         <button class="pay-box esp" data-action="pay" data-method="ESP">
           ESP<span class="label">Cash</span>
@@ -363,12 +386,13 @@ function renderStats() {
 
   const stats = {};
   for (const b of BARBERS) {
-    stats[b] = { count: 0, esp: 0, cb: 0, total: 0 };
+    stats[b] = { count: 0, esp: 0, cb: 0, total: 0, coupons: 0 };
   }
   for (const e of weekEntries) {
     if (!stats[e.barber]) continue;
     stats[e.barber].count++;
     stats[e.barber].total += e.amount;
+    if (e.coupon) stats[e.barber].coupons++;
     if (e.method === "ESP") stats[e.barber].esp += e.amount;
     else stats[e.barber].cb += e.amount;
   }
@@ -388,6 +412,7 @@ function renderStats() {
       <div class="row"><span class="label">Customers</span><span class="value">${s.count}</span></div>
       <div class="row"><span class="label">Cash (ESP)</span><span class="value">${s.esp}€</span></div>
       <div class="row"><span class="label">Card (CB)</span><span class="value">${s.cb}€</span></div>
+      <div class="row"><span class="label">Coupons</span><span class="value">${s.coupons}</span></div>
       <div class="row total"><span class="label">Total</span><span class="value">${s.total}€</span></div>
     </div>`;
   }
@@ -429,6 +454,7 @@ function renderStats() {
           </div>
           <div>
             <span class="amt">${e.amount}€</span>
+            ${e.coupon ? `<span class="coupon-tag">−20%</span>` : ""}
             <span class="pay ${e.method}">${e.method}</span>
             <button class="edit-btn" data-action="edit-entry" data-id="${e.id}" title="Edit">✎</button>
             <button class="del-btn" data-action="delete-entry" data-id="${e.id}" title="Delete">×</button>
@@ -456,6 +482,7 @@ function renderStats() {
         e.type === "entry" && e.method
           ? `<span class="pay ${e.method}">${e.method}</span>`
           : "";
+      const cpn = e.coupon ? `<span class="coupon-tag">−20%</span>` : "";
       const delTs = new Date(e.deletedAt).getTime();
       html += `<div class="entry deleted-entry">
         <div>
@@ -463,7 +490,7 @@ function renderStats() {
           <span class="meta">${formatDay(e.time)} ${formatTime(e.time)}</span>
           <div class="meta removed">removed ${formatDay(delTs)} ${formatTime(delTs)}</div>
         </div>
-        <div><span class="amt">${amt}</span> ${pay}</div>
+        <div><span class="amt">${amt}</span> ${cpn} ${pay}</div>
       </div>`;
     }
     html += `</div>`;
@@ -481,6 +508,7 @@ function attachHandlers() {
       state.selectedBarber = null;
       state.amount = "";
       state.editingId = null;
+      state.coupon = false;
       render();
       if (state.tab === "stats" || state.tab === "checkin") syncNow();
     });
@@ -499,7 +527,12 @@ function handleAction(action, data) {
     case "select-barber":
       state.selectedBarber = data.barber;
       state.amount = "";
+      state.coupon = false;
       state.view = "amount";
+      render();
+      break;
+    case "toggle-coupon":
+      state.coupon = !state.coupon;
       render();
       break;
     case "start-expense":
@@ -533,6 +566,7 @@ function handleAction(action, data) {
       state.view = "home";
       state.selectedBarber = null;
       state.amount = "";
+      state.coupon = false;
       render();
       break;
     case "back-amount":
@@ -555,28 +589,37 @@ function handleAction(action, data) {
       }
       break;
     case "pay": {
+      const rawAmt = parseInt(state.amount, 10);
       if (state.editingId) {
         localUpdate(state.editingId, {
-          amount: parseInt(state.amount, 10),
+          amount: rawAmt,
           method: data.method,
+          coupon: state.coupon,
         });
-        showToast(`Updated: ${state.amount}€ ${data.method}`);
+        showToast(`Updated: ${rawAmt}€ ${data.method}`);
         state.editingId = null;
         state.tab = "stats";
       } else {
+        const finalAmt = state.coupon ? Math.round(rawAmt * 0.8) : rawAmt;
         localInsert({
           id: newId(),
           type: "entry",
           barber: state.selectedBarber,
-          amount: parseInt(state.amount, 10),
+          amount: finalAmt,
           method: data.method,
           ts: Date.now(),
+          coupon: state.coupon,
         });
-        showToast(`Saved: ${state.selectedBarber} ${state.amount}€ ${data.method}`);
+        showToast(
+          `Saved: ${state.selectedBarber} ${finalAmt}€ ${data.method}${
+            state.coupon ? " (−20%)" : ""
+          }`
+        );
       }
       state.view = "home";
       state.selectedBarber = null;
       state.amount = "";
+      state.coupon = false;
       render();
       syncNow();
       break;
@@ -622,6 +665,7 @@ function handleAction(action, data) {
       state.editingId = entry.id;
       state.selectedBarber = entry.barber;
       state.amount = String(entry.amount);
+      state.coupon = !!entry.coupon;
       state.tab = "register";
       state.view = "amount";
       render();
