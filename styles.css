@@ -255,6 +255,35 @@ header h1 {
   background: #14532d;
   color: #86efac;
 }
+.date-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: #1e293b;
+  padding: 10px 14px;
+  border-radius: 12px;
+  margin-bottom: 12px;
+}
+.date-row label { color: #cbd5e1; font-size: 14px; }
+.date-row .date-input {
+  background: #0f172a;
+  color: #f8fafc;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 14px;
+}
+.date-row.backdated {
+  background: linear-gradient(135deg, #78350f, #b45309);
+  border: 1px solid #f59e0b;
+}
+.date-row.backdated label { color: #fef3c7; font-weight: 600; }
+.entry.is-backdated { border-left: 3px solid #f59e0b; padding-left: 8px; }
+.entry .added-later {
+  font-size: 11px;
+  color: #fbbf24;
+  margin-top: 2px;
+}
 .deleted-history { margin-top: 12px; border: 1px dashed #475569; }
 .deleted-history h3 { color: #ef4444; }
 .entry.deleted-entry { opacity: 0.65; }

@@ -12,6 +12,7 @@ const state = {
   weekOffset: 0,
   editingId: null,
   coupon: false,
+  entryDate: null, // YYYY-MM-DD; null = today
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
   pending: loadPending(),
@@ -52,6 +53,7 @@ function rebuildData() {
         method: e.method,
         coupon: !!e.coupon,
         time,
+        createdAt: e.created_at || null,
         deletedAt: e.deleted_at,
       });
       continue;
@@ -64,11 +66,12 @@ function rebuildData() {
         method: e.method,
         coupon: !!e.coupon,
         time,
+        createdAt: e.created_at || null,
       });
     else if (e.type === "expense")
-      d.expenses.push({ id: e.id, amount: e.amount, time });
+      d.expenses.push({ id: e.id, amount: e.amount, time, createdAt: e.created_at || null });
     else if (e.type === "checkin")
-      d.checkins.push({ id: e.id, barber: e.barber, time });
+      d.checkins.push({ id: e.id, barber: e.barber, time, createdAt: e.created_at || null });
   }
   state.data = d;
 }
@@ -140,6 +143,7 @@ async function fetchAll() {
     ts: Number(r.ts),
     deleted_at: r.deleted_at || null,
     coupon: r.coupon === true || r.coupon === "t" || r.coupon === "true",
+    created_at: r.created_at || null,
   }));
   saveCache();
   rebuildData();
@@ -226,6 +230,38 @@ function todayKey(ts = Date.now()) {
   d.setHours(0, 0, 0, 0);
   return d.getTime();
 }
+
+function todayISO() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function isoDaysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function tsFromEntryDate() {
+  // If no entryDate, use right now. Otherwise use the chosen calendar day
+  // with the current time of day, so the entry sits sensibly inside that day.
+  if (!state.entryDate || state.entryDate === todayISO()) return Date.now();
+  const [y, m, d] = state.entryDate.split("-").map(Number);
+  const now = new Date();
+  return new Date(y, m - 1, d, now.getHours(), now.getMinutes(), now.getSeconds()).getTime();
+}
+
+function isBackdated(time, createdAt) {
+  if (!createdAt) return false;
+  const c = new Date(createdAt);
+  return todayKey(c.getTime()) !== todayKey(time);
+}
 function checkinToday(barber) {
   return state.data.checkins.find(
     (c) => c.barber === barber && todayKey(c.time) === todayKey()
@@ -283,9 +319,15 @@ function renderRegister() {
     const display = state.amount ? state.amount : "0";
     const empty = state.amount ? "" : "empty";
     const editing = state.editingId ? " (editing)" : "";
+    const curDate = state.entryDate || todayISO();
+    const backDated = curDate !== todayISO();
     return `<div class="screen">
       <button class="back-btn" data-action="back-home">&larr; ${state.editingId ? "Cancel" : "Back"}</button>
       <h2>Dépense — Amount?${editing}</h2>
+      ${state.editingId ? "" : `<div class="date-row ${backDated ? "backdated" : ""}">
+        <label for="entry-date-input">Date</label>
+        <input id="entry-date-input" class="date-input" type="date" value="${curDate}" max="${todayISO()}" min="${isoDaysAgo(60)}">
+      </div>`}
       <div class="amount-display ${empty}">${display}<span class="currency">€</span></div>
       <div class="keypad">
         ${[1,2,3,4,5,6,7,8,9].map(n => `<button class="key" data-action="key" data-key="${n}">${n}</button>`).join("")}
@@ -306,9 +348,15 @@ function renderRegister() {
       !isEdit && state.coupon && raw > 0
         ? `<span class="struck">${raw}</span> ${finalAmt}<span class="currency">€</span>`
         : `${state.amount ? state.amount : "0"}<span class="currency">€</span>`;
+    const curDate = state.entryDate || todayISO();
+    const backDated = curDate !== todayISO();
     return `<div class="screen">
       <button class="back-btn" data-action="back-home">&larr; ${state.editingId ? "Cancel" : "Back"}</button>
       <h2>${state.selectedBarber} — Amount?${editing}</h2>
+      ${isEdit ? "" : `<div class="date-row ${backDated ? "backdated" : ""}">
+        <label for="entry-date-input">Date</label>
+        <input id="entry-date-input" class="date-input" type="date" value="${curDate}" max="${todayISO()}" min="${isoDaysAgo(60)}">
+      </div>`}
       <div class="amount-display ${empty}">${amountInner}</div>
       <button class="coupon-btn ${state.coupon ? "on" : ""}" data-action="toggle-coupon">
         ${state.coupon ? "✓ Coupon −20% applied" : "Coupon −20%"}
@@ -434,11 +482,16 @@ function renderStats() {
     html += `<div style="text-align:center;color:#64748b;padding:20px">No entries yet</div>`;
   } else {
     for (const e of merged) {
+      const back = isBackdated(e.time, e.createdAt);
+      const backTag = back
+        ? `<div class="meta added-later">added ${formatDay(new Date(e.createdAt).getTime())} ${formatTime(new Date(e.createdAt).getTime())}</div>`
+        : "";
       if (e.kind === "expense") {
-        html += `<div class="entry expense-entry">
+        html += `<div class="entry expense-entry ${back ? "is-backdated" : ""}">
           <div>
             <span class="who">Dépense</span>
             <span class="meta">${formatDay(e.time)} ${formatTime(e.time)}</span>
+            ${backTag}
           </div>
           <div>
             <span class="amt expense-amt">-${e.amount}€</span>
@@ -447,10 +500,11 @@ function renderStats() {
           </div>
         </div>`;
       } else {
-        html += `<div class="entry">
+        html += `<div class="entry ${back ? "is-backdated" : ""}">
           <div>
             <span class="who">${e.barber}</span>
             <span class="meta">${formatDay(e.time)} ${formatTime(e.time)}</span>
+            ${backTag}
           </div>
           <div>
             <span class="amt">${e.amount}€</span>
@@ -509,6 +563,7 @@ function attachHandlers() {
       state.amount = "";
       state.editingId = null;
       state.coupon = false;
+      state.entryDate = null;
       render();
       if (state.tab === "stats" || state.tab === "checkin") syncNow();
     });
@@ -517,6 +572,15 @@ function attachHandlers() {
   document.querySelectorAll("[data-action]").forEach((el) => {
     el.addEventListener("click", (e) => handleAction(el.dataset.action, el.dataset, e));
   });
+
+  const dateInput = document.getElementById("entry-date-input");
+  if (dateInput) {
+    dateInput.addEventListener("change", () => {
+      const v = dateInput.value;
+      state.entryDate = v && v !== todayISO() ? v : null;
+      render();
+    });
+  }
 }
 
 function handleAction(action, data) {
@@ -528,6 +592,7 @@ function handleAction(action, data) {
       state.selectedBarber = data.barber;
       state.amount = "";
       state.coupon = false;
+      state.entryDate = null;
       state.view = "amount";
       render();
       break;
@@ -537,6 +602,7 @@ function handleAction(action, data) {
       break;
     case "start-expense":
       state.amount = "";
+      state.entryDate = null;
       state.view = "expense-amount";
       render();
       break;
@@ -549,11 +615,13 @@ function handleAction(action, data) {
         state.editingId = null;
         state.tab = "stats";
       } else {
-        localInsert({ id: newId(), type: "expense", amount: amt, ts: Date.now() });
-        showToast(`Expense saved: ${amt}€`);
+        const ts = tsFromEntryDate();
+        localInsert({ id: newId(), type: "expense", amount: amt, ts });
+        showToast(`Expense saved: ${amt}€${state.entryDate ? " (backdated)" : ""}`);
       }
       state.view = "home";
       state.amount = "";
+      state.entryDate = null;
       render();
       syncNow();
       break;
@@ -567,6 +635,7 @@ function handleAction(action, data) {
       state.selectedBarber = null;
       state.amount = "";
       state.coupon = false;
+      state.entryDate = null;
       render();
       break;
     case "back-amount":
@@ -601,25 +670,27 @@ function handleAction(action, data) {
         state.tab = "stats";
       } else {
         const finalAmt = state.coupon ? Math.round(rawAmt * 0.8) : rawAmt;
+        const ts = tsFromEntryDate();
         localInsert({
           id: newId(),
           type: "entry",
           barber: state.selectedBarber,
           amount: finalAmt,
           method: data.method,
-          ts: Date.now(),
+          ts,
           coupon: state.coupon,
         });
         showToast(
           `Saved: ${state.selectedBarber} ${finalAmt}€ ${data.method}${
             state.coupon ? " (−20%)" : ""
-          }`
+          }${state.entryDate ? " (backdated)" : ""}`
         );
       }
       state.view = "home";
       state.selectedBarber = null;
       state.amount = "";
       state.coupon = false;
+      state.entryDate = null;
       render();
       syncNow();
       break;

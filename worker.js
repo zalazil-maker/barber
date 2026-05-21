@@ -79,7 +79,7 @@ export default {
     try {
       if (request.method === "GET") {
         const out = await q(
-          "select id, type, barber, amount, method, ts, deleted_at, coupon from events order by ts desc limit 5000"
+          "select id, type, barber, amount, method, ts, deleted_at, coupon, created_at from events order by ts desc limit 5000"
         );
         return json(out.rows || []);
       }
