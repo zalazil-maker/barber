@@ -16,7 +16,7 @@ const state = {
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
   pending: loadPending(),
-  data: { entries: [], checkins: [], expenses: [], deleted: [] },
+  data: { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [] },
 };
 
 function loadCache() {
@@ -41,7 +41,7 @@ function savePending() {
 }
 
 function rebuildData() {
-  const d = { entries: [], checkins: [], expenses: [], deleted: [] };
+  const d = { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [] };
   for (const e of state.events) {
     const time = Number(e.ts);
     if (e.deleted_at) {
@@ -72,6 +72,8 @@ function rebuildData() {
       d.expenses.push({ id: e.id, amount: e.amount, time, createdAt: e.created_at || null });
     else if (e.type === "checkin")
       d.checkins.push({ id: e.id, barber: e.barber, time, createdAt: e.created_at || null });
+    else if (e.type === "acompte")
+      d.acomptes.push({ id: e.id, barber: e.barber, amount: e.amount, time, createdAt: e.created_at || null });
   }
   state.data = d;
 }
@@ -284,6 +286,7 @@ function buildWeeklyReport() {
   const { start, end } = getCurrentWeekRange();
   const entries = state.data.entries.filter((e) => e.time >= start && e.time < end);
   const expenses = state.data.expenses.filter((e) => e.time >= start && e.time < end);
+  const acomptes = state.data.acomptes.filter((e) => e.time >= start && e.time < end);
 
   const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
   const cash = (arr) => arr.filter((e) => e.method === "ESP");
@@ -295,6 +298,7 @@ function buildWeeklyReport() {
     cash: sum(cash(entries), (e) => e.amount),
     card: sum(card(entries), (e) => e.amount),
     expensesTotal: sum(expenses, (e) => e.amount),
+    acomptesTotal: sum(acomptes, (e) => e.amount),
   };
 
   const days = [];
@@ -315,14 +319,19 @@ function buildWeeklyReport() {
   const barbers = {};
   for (const b of BARBERS) {
     const bE = entries.filter((e) => e.barber === b);
+    const bA = acomptes.filter((e) => e.barber === b);
     const gross = sum(bE, (e) => e.amount);
+    const acompteTotal = sum(bA, (e) => e.amount);
+    const shareGross = gross * SPLIT;
     barbers[b] = {
       customers: bE.length,
       gross,
       cash: sum(cash(bE), (e) => e.amount),
       card: sum(card(bE), (e) => e.amount),
       coupons: bE.filter((e) => e.coupon).length,
-      share: gross * SPLIT,
+      acomptes: acompteTotal,
+      shareGross,
+      shareNet: shareGross - acompteTotal,
     };
   }
 
@@ -439,6 +448,7 @@ function generateWeeklyPDF() {
       ["    Cash", money(s.cash)],
       ["    Card", money(s.card)],
       ["Coupons used", `${s.coupons}`],
+      ["Acomptes (advances) taken", `- ${money(s.acomptes)}`],
     ];
     for (const [k, v] of rows) {
       doc.text(k, M + 5, y);
@@ -459,9 +469,17 @@ function generateWeeklyPDF() {
   doc.setFontSize(11);
   for (const b of BARBERS) {
     const s = r.barbers[b];
-    doc.text(`${b} keeps (${Math.round(r.split * 100)}% of ${money(s.gross)}):`, M, y);
-    doc.text(money(s.share), W - M, y, { align: "right" });
-    y += 6;
+    doc.text(`${b} share (${Math.round(r.split * 100)}% of ${money(s.gross)}):`, M, y);
+    doc.text(money(s.shareGross), W - M, y, { align: "right" });
+    y += 5.5;
+    doc.text(`    Less Acomptes taken:`, M, y);
+    doc.text(`- ${money(s.acomptes)}`, W - M, y, { align: "right" });
+    y += 5.5;
+    doc.setFont("helvetica", "bold");
+    doc.text(`    End-of-week payout to ${b}:`, M, y);
+    doc.text(money(s.shareNet), W - M, y, { align: "right" });
+    doc.setFont("helvetica", "normal");
+    y += 7;
   }
   doc.line(M, y, W - M, y);
   y += 6;
@@ -523,7 +541,44 @@ function renderRegister() {
         <button class="barber-box sami" data-action="select-barber" data-barber="Sami">Sami</button>
         <button class="barber-box amine" data-action="select-barber" data-barber="Amine">Amine</button>
       </div>
-      <button class="depense-btn" data-action="start-expense">Dépense</button>
+      <div class="secondary-actions">
+        <button class="depense-btn" data-action="start-expense">Dépense</button>
+        <button class="acompte-btn" data-action="start-acompte">Acompte</button>
+      </div>
+    </div>`;
+  }
+
+  if (state.view === "acompte-barber") {
+    return `<div class="screen">
+      <button class="back-btn" data-action="back-home">&larr; Back</button>
+      <h2>Acompte — Who's taking it?</h2>
+      <div class="barbers">
+        <button class="barber-box sami" data-action="select-acompte-barber" data-barber="Sami">Sami</button>
+        <button class="barber-box amine" data-action="select-acompte-barber" data-barber="Amine">Amine</button>
+      </div>
+    </div>`;
+  }
+
+  if (state.view === "acompte-amount") {
+    const display = state.amount ? state.amount : "0";
+    const empty = state.amount ? "" : "empty";
+    const editing = state.editingId ? " (editing)" : "";
+    const curDate = state.entryDate || todayISO();
+    const backDated = curDate !== todayISO();
+    return `<div class="screen">
+      <button class="back-btn" data-action="back-home">&larr; ${state.editingId ? "Cancel" : "Back"}</button>
+      <h2>${state.selectedBarber} — Acompte amount?${editing}</h2>
+      ${state.editingId ? "" : `<div class="date-row ${backDated ? "backdated" : ""}">
+        <label for="entry-date-input">Date</label>
+        <input id="entry-date-input" class="date-input" type="date" value="${curDate}" max="${todayISO()}" min="${isoDaysAgo(60)}">
+      </div>`}
+      <div class="amount-display ${empty}">${display}<span class="currency">€</span></div>
+      <div class="keypad">
+        ${[1,2,3,4,5,6,7,8,9].map(n => `<button class="key" data-action="key" data-key="${n}">${n}</button>`).join("")}
+        <button class="key del" data-action="key" data-key="del">⌫</button>
+        <button class="key" data-action="key" data-key="0">0</button>
+        <button class="key ok" data-action="confirm-acompte">OK</button>
+      </div>
     </div>`;
   }
 
@@ -644,9 +699,11 @@ function renderStats() {
   const weekExpenses = state.data.expenses.filter((e) => e.time >= start && e.time < end);
   const expensesTotal = weekExpenses.reduce((s, e) => s + e.amount, 0);
 
+  const weekAcomptes = state.data.acomptes.filter((e) => e.time >= start && e.time < end);
+
   const stats = {};
   for (const b of BARBERS) {
-    stats[b] = { count: 0, esp: 0, cb: 0, total: 0, coupons: 0 };
+    stats[b] = { count: 0, esp: 0, cb: 0, total: 0, coupons: 0, acomptes: 0 };
   }
   for (const e of weekEntries) {
     if (!stats[e.barber]) continue;
@@ -655,6 +712,9 @@ function renderStats() {
     if (e.coupon) stats[e.barber].coupons++;
     if (e.method === "ESP") stats[e.barber].esp += e.amount;
     else stats[e.barber].cb += e.amount;
+  }
+  for (const a of weekAcomptes) {
+    if (stats[a.barber]) stats[a.barber].acomptes += a.amount;
   }
 
   let html = `<div class="screen">
@@ -675,6 +735,7 @@ function renderStats() {
       <div class="row"><span class="label">Card (CB)</span><span class="value">${s.cb}€</span></div>
       <div class="row"><span class="label">Coupons</span><span class="value">${s.coupons}</span></div>
       <div class="row total"><span class="label">Total</span><span class="value">${s.total}€</span></div>
+      <div class="row"><span class="label">Acomptes</span><span class="value acompte-val">-${s.acomptes}€</span></div>
     </div>`;
   }
   html += `</div>`;
@@ -688,6 +749,7 @@ function renderStats() {
   const merged = [
     ...weekEntries.map((e) => ({ ...e, kind: "entry" })),
     ...weekExpenses.map((e) => ({ ...e, kind: "expense" })),
+    ...weekAcomptes.map((e) => ({ ...e, kind: "acompte" })),
   ].sort((a, b) => b.time - a.time);
 
   html += `<div class="history"><h3>This week's activity (${merged.length})</h3>`;
@@ -710,6 +772,19 @@ function renderStats() {
             <span class="amt expense-amt">-${e.amount}€</span>
             <button class="edit-btn" data-action="edit-entry" data-kind="expense" data-id="${e.id}" title="Edit">✎</button>
             <button class="del-btn" data-action="delete-entry" data-kind="expense" data-id="${e.id}" title="Delete">×</button>
+          </div>
+        </div>`;
+      } else if (e.kind === "acompte") {
+        html += `<div class="entry acompte-entry ${back ? "is-backdated" : ""}">
+          <div>
+            <span class="who">${e.barber} — Acompte</span>
+            <span class="meta">${formatDay(e.time)} ${formatTime(e.time)}</span>
+            ${backTag}
+          </div>
+          <div>
+            <span class="amt acompte-amt">-${e.amount}€</span>
+            <button class="edit-btn" data-action="edit-entry" data-kind="acompte" data-id="${e.id}" title="Edit">✎</button>
+            <button class="del-btn" data-action="delete-entry" data-kind="acompte" data-id="${e.id}" title="Delete">×</button>
           </div>
         </div>`;
       } else {
@@ -738,9 +813,14 @@ function renderStats() {
   if (weekDeleted.length) {
     html += `<div class="history deleted-history"><h3>Deleted this week (${weekDeleted.length}) — trace only</h3>`;
     for (const e of weekDeleted) {
-      const label = e.type === "expense" ? "Dépense" : e.barber || e.type;
-      const amt =
+      const label =
         e.type === "expense"
+          ? "Dépense"
+          : e.type === "acompte"
+          ? `${e.barber} — Acompte`
+          : e.barber || e.type;
+      const amt =
+        e.type === "expense" || e.type === "acompte"
           ? `-${e.amount}€`
           : e.amount != null
           ? `${e.amount}€`
@@ -822,6 +902,50 @@ function handleAction(action, data) {
       state.view = "expense-amount";
       render();
       break;
+    case "start-acompte":
+      state.amount = "";
+      state.entryDate = null;
+      state.selectedBarber = null;
+      state.view = "acompte-barber";
+      render();
+      break;
+    case "select-acompte-barber":
+      state.selectedBarber = data.barber;
+      state.amount = "";
+      state.view = "acompte-amount";
+      render();
+      break;
+    case "confirm-acompte": {
+      const amt = parseInt(state.amount, 10);
+      if (!amt || amt <= 0) return;
+      if (state.editingId) {
+        localUpdate(state.editingId, { amount: amt });
+        showToast(`Acompte updated: ${amt}€`);
+        state.editingId = null;
+        state.tab = "stats";
+      } else {
+        const ts = tsFromEntryDate();
+        localInsert({
+          id: newId(),
+          type: "acompte",
+          barber: state.selectedBarber,
+          amount: amt,
+          ts,
+        });
+        showToast(
+          `Acompte saved: ${state.selectedBarber} ${amt}€${
+            state.entryDate ? " (backdated)" : ""
+          }`
+        );
+      }
+      state.view = "home";
+      state.amount = "";
+      state.selectedBarber = null;
+      state.entryDate = null;
+      render();
+      syncNow();
+      break;
+    }
     case "confirm-expense": {
       const amt = parseInt(state.amount, 10);
       if (!amt || amt <= 0) return;
@@ -944,6 +1068,17 @@ function handleAction(action, data) {
         state.amount = String(exp.amount);
         state.tab = "register";
         state.view = "expense-amount";
+        render();
+        return;
+      }
+      if (data.kind === "acompte") {
+        const ac = state.data.acomptes.find((e) => e.id === data.id);
+        if (!ac) return;
+        state.editingId = ac.id;
+        state.selectedBarber = ac.barber;
+        state.amount = String(ac.amount);
+        state.tab = "register";
+        state.view = "acompte-amount";
         render();
         return;
       }
