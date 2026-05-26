@@ -280,6 +280,218 @@ function newId() {
   return Date.now() + "-" + Math.random().toString(36).slice(2, 7);
 }
 
+function buildWeeklyReport() {
+  const { start, end } = getCurrentWeekRange();
+  const entries = state.data.entries.filter((e) => e.time >= start && e.time < end);
+  const expenses = state.data.expenses.filter((e) => e.time >= start && e.time < end);
+
+  const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
+  const cash = (arr) => arr.filter((e) => e.method === "ESP");
+  const card = (arr) => arr.filter((e) => e.method === "CB");
+
+  const totals = {
+    customers: entries.length,
+    gross: sum(entries, (e) => e.amount),
+    cash: sum(cash(entries), (e) => e.amount),
+    card: sum(card(entries), (e) => e.amount),
+    expensesTotal: sum(expenses, (e) => e.amount),
+  };
+
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const dStart = start + i * 86400000;
+    const dEnd = dStart + 86400000;
+    const dE = entries.filter((e) => e.time >= dStart && e.time < dEnd);
+    days.push({
+      date: new Date(dStart),
+      customers: dE.length,
+      cash: sum(cash(dE), (e) => e.amount),
+      card: sum(card(dE), (e) => e.amount),
+      total: sum(dE, (e) => e.amount),
+    });
+  }
+
+  const SPLIT = 0.5; // 50% barber / 50% house, same for both barbers
+  const barbers = {};
+  for (const b of BARBERS) {
+    const bE = entries.filter((e) => e.barber === b);
+    const gross = sum(bE, (e) => e.amount);
+    barbers[b] = {
+      customers: bE.length,
+      gross,
+      cash: sum(cash(bE), (e) => e.amount),
+      card: sum(card(bE), (e) => e.amount),
+      coupons: bE.filter((e) => e.coupon).length,
+      share: gross * SPLIT,
+    };
+  }
+
+  const houseGross = totals.gross * (1 - SPLIT);
+  const houseNet = houseGross - totals.expensesTotal;
+
+  return {
+    startD: new Date(start),
+    endD: new Date(end - 1),
+    totals,
+    days,
+    barbers,
+    houseGross,
+    houseNet,
+    split: SPLIT,
+  };
+}
+
+function generateWeeklyPDF() {
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    showToast("PDF library not loaded — connect to internet and refresh");
+    return;
+  }
+  const r = buildWeeklyReport();
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const W = 210;
+  const M = 15;
+  const money = (n) => `${(Math.round(n * 100) / 100).toFixed(2)} €`;
+  let y = M + 5;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(20);
+  doc.text("Barbershop — Weekly Report", M, y);
+  y += 8;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  const range = `${r.startD.toLocaleDateString(undefined, {
+    day: "2-digit", month: "short", year: "numeric",
+  })}  —  ${r.endD.toLocaleDateString(undefined, {
+    day: "2-digit", month: "short", year: "numeric",
+  })}`;
+  doc.text(range, M, y);
+  y += 10;
+
+  // SUMMARY
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.text("Summary", M, y);
+  y += 7;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  const sumRows = [
+    ["Total customers", `${r.totals.customers}`],
+    ["Gross revenue", money(r.totals.gross)],
+    ["    Cash (ESP)", money(r.totals.cash)],
+    ["    Card (CB)", money(r.totals.card)],
+    ["Expenses (Dépenses)", `- ${money(r.totals.expensesTotal)}`],
+    ["Net revenue", money(r.totals.gross - r.totals.expensesTotal)],
+  ];
+  for (const [k, v] of sumRows) {
+    doc.text(k, M, y);
+    doc.text(v, W - M, y, { align: "right" });
+    y += 6;
+  }
+  y += 4;
+
+  // PER DAY
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.text("Per day", M, y);
+  y += 7;
+  doc.setFontSize(10);
+  const cols = { day: M, cust: M + 60, cash: M + 95, card: M + 130, total: M + 165 };
+  doc.text("Day", cols.day, y);
+  doc.text("Customers", cols.cust, y);
+  doc.text("Cash", cols.cash, y);
+  doc.text("Card", cols.card, y);
+  doc.text("Total", cols.total, y);
+  y += 1.5;
+  doc.line(M, y, W - M, y);
+  y += 4.5;
+  doc.setFont("helvetica", "normal");
+  for (const d of r.days) {
+    const lbl = d.date.toLocaleDateString(undefined, {
+      weekday: "short", day: "2-digit", month: "short",
+    });
+    doc.text(lbl, cols.day, y);
+    doc.text(`${d.customers}`, cols.cust, y);
+    doc.text(money(d.cash), cols.cash, y);
+    doc.text(money(d.card), cols.card, y);
+    doc.text(money(d.total), cols.total, y);
+    y += 6;
+  }
+  y += 4;
+
+  if (y > 230) { doc.addPage(); y = M; }
+
+  // PER BARBER
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.text("Per barber", M, y);
+  y += 7;
+  doc.setFontSize(11);
+  for (const b of BARBERS) {
+    const s = r.barbers[b];
+    doc.setFont("helvetica", "bold");
+    doc.text(b, M, y);
+    y += 6;
+    doc.setFont("helvetica", "normal");
+    const rows = [
+      ["Customers", `${s.customers}`],
+      ["Gross revenue", money(s.gross)],
+      ["    Cash", money(s.cash)],
+      ["    Card", money(s.card)],
+      ["Coupons used", `${s.coupons}`],
+    ];
+    for (const [k, v] of rows) {
+      doc.text(k, M + 5, y);
+      doc.text(v, W - M, y, { align: "right" });
+      y += 5.5;
+    }
+    y += 3;
+  }
+
+  if (y > 230) { doc.addPage(); y = M; }
+
+  // SPLIT
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.text(`Split (${Math.round(r.split * 100)}% barber / ${Math.round((1 - r.split) * 100)}% house)`, M, y);
+  y += 7;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  for (const b of BARBERS) {
+    const s = r.barbers[b];
+    doc.text(`${b} keeps (${Math.round(r.split * 100)}% of ${money(s.gross)}):`, M, y);
+    doc.text(money(s.share), W - M, y, { align: "right" });
+    y += 6;
+  }
+  doc.line(M, y, W - M, y);
+  y += 6;
+  doc.setFont("helvetica", "bold");
+  doc.text("House share (before expenses):", M, y);
+  doc.text(money(r.houseGross), W - M, y, { align: "right" });
+  y += 6;
+  doc.setFont("helvetica", "normal");
+  doc.text("Expenses (house absorbs):", M, y);
+  doc.text(`- ${money(r.totals.expensesTotal)}`, W - M, y, { align: "right" });
+  y += 6;
+  doc.setFont("helvetica", "bold");
+  doc.text("House net (yours):", M, y);
+  doc.text(money(r.houseNet), W - M, y, { align: "right" });
+  y += 12;
+
+  doc.setFontSize(9);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(120);
+  doc.text(
+    `Generated ${new Date().toLocaleString()} · Barbershop App`,
+    M,
+    287
+  );
+
+  const fname = `Barbershop-Week-${r.startD.toISOString().slice(0, 10)}.pdf`;
+  doc.save(fname);
+  showToast("PDF saved: " + fname);
+}
+
 function render() {
   const root = document.getElementById("app");
   let html = `<header>
@@ -451,6 +663,7 @@ function renderStats() {
       <div class="week-label">${getWeekLabel()}</div>
       <button data-action="week-next" ${state.weekOffset >= 0 ? "disabled style='opacity:0.4'" : ""}>Next &rarr;</button>
     </div>
+    <button class="pdf-btn" data-action="download-pdf">📄 Download weekly PDF report</button>
     <div class="summary">`;
 
   for (const b of BARBERS) {
@@ -587,6 +800,9 @@ function handleAction(action, data) {
   switch (action) {
     case "sync":
       syncNow();
+      break;
+    case "download-pdf":
+      generateWeeklyPDF();
       break;
     case "select-barber":
       state.selectedBarber = data.barber;

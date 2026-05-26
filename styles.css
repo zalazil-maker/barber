@@ -284,6 +284,19 @@ header h1 {
   color: #fbbf24;
   margin-top: 2px;
 }
+.pdf-btn {
+  width: 100%;
+  padding: 12px;
+  margin-bottom: 14px;
+  background: linear-gradient(135deg, #1e3a8a, #3b82f6);
+  color: #fff;
+  border: none;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pdf-btn:active { transform: scale(0.98); }
 .deleted-history { margin-top: 12px; border: 1px dashed #475569; }
 .deleted-history h3 { color: #ef4444; }
 .entry.deleted-entry { opacity: 0.65; }
