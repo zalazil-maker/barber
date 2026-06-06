@@ -13,6 +13,7 @@ const state = {
   editingId: null,
   coupon: false,
   entryDate: null, // YYYY-MM-DD; null = today
+  analytics: { period: "week", scope: "all", offset: 0 },
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
   pending: loadPending(),
@@ -523,11 +524,13 @@ function render() {
     <button class="tab ${state.tab === "register" ? "active" : ""}" data-tab="register">Register</button>
     <button class="tab ${state.tab === "checkin" ? "active" : ""}" data-tab="checkin">Check-In</button>
     <button class="tab ${state.tab === "stats" ? "active" : ""}" data-tab="stats">Stats</button>
+    <button class="tab ${state.tab === "analytics" ? "active" : ""}" data-tab="analytics">Analytics</button>
   </div>`;
 
   if (state.tab === "register") html += renderRegister();
   else if (state.tab === "checkin") html += renderCheckin();
-  else html += renderStats();
+  else if (state.tab === "stats") html += renderStats();
+  else if (state.tab === "analytics") html += renderAnalytics();
 
   root.innerHTML = html;
   attachHandlers();
@@ -847,6 +850,192 @@ function renderStats() {
   return html;
 }
 
+function getAnalyticsRange() {
+  const { period, offset } = state.analytics;
+  if (period === "all") {
+    return { start: 0, end: Date.now() + 1, label: "All time", days: 1, canNav: false };
+  }
+  if (period === "week") {
+    const now = new Date();
+    now.setDate(now.getDate() + offset * 7);
+    const start = startOfWeek(now).getTime();
+    const end = endOfWeek(now).getTime();
+    const endDisp = new Date(end - 1);
+    const label =
+      offset === 0
+        ? `This week (${formatDate(start)} – ${formatDate(endDisp)})`
+        : offset === -1
+        ? `Last week (${formatDate(start)} – ${formatDate(endDisp)})`
+        : `${formatDate(start)} – ${formatDate(endDisp)}`;
+    return { start, end, label, days: 7, canNav: true };
+  }
+  // month
+  const now = new Date();
+  now.setMonth(now.getMonth() + offset);
+  const s = new Date(now.getFullYear(), now.getMonth(), 1);
+  const e = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+  const start = s.getTime();
+  const end = e.getTime();
+  const days = Math.round((end - start) / 86400000);
+  const label =
+    offset === 0
+      ? `This month (${s.toLocaleDateString(undefined, { month: "long", year: "numeric" })})`
+      : s.toLocaleDateString(undefined, { month: "long", year: "numeric" });
+  return { start, end, label, days, canNav: true };
+}
+
+function computeBucket(start, end, barberFilter) {
+  const sel = (e) => e.time >= start && e.time < end && (barberFilter ? e.barber === barberFilter : true);
+  const entries = state.data.entries.filter(sel);
+  const acomptes = state.data.acomptes.filter(sel);
+  const cash = entries.filter((e) => e.method === "ESP");
+  const card = entries.filter((e) => e.method === "CB");
+  const revenue = entries.reduce((s, e) => s + e.amount, 0);
+  const cashTotal = cash.reduce((s, e) => s + e.amount, 0);
+  const cardTotal = card.reduce((s, e) => s + e.amount, 0);
+  const coupons = entries.filter((e) => e.coupon).length;
+  const acompteTotal = acomptes.reduce((s, e) => s + e.amount, 0);
+  const dayKeys = new Set(entries.map((e) => todayKey(e.time)));
+  return {
+    customers: entries.length,
+    revenue,
+    cash: cashTotal,
+    card: cardTotal,
+    coupons,
+    acomptes: acompteTotal,
+    avgPerCustomer: entries.length ? revenue / entries.length : 0,
+    activeDays: dayKeys.size,
+  };
+}
+
+function fmtEuro(n) {
+  return `${(Math.round(n * 100) / 100).toFixed(2)} €`;
+}
+function fmtEuroInt(n) {
+  return `${Math.round(n)} €`;
+}
+function fmtPct(now, prev) {
+  if (!prev) return now ? "—" : "0%";
+  const p = ((now - prev) / prev) * 100;
+  const sign = p >= 0 ? "+" : "";
+  return `${sign}${p.toFixed(0)}%`;
+}
+
+function renderAnalytics() {
+  const { period, scope } = state.analytics;
+  const range = getAnalyticsRange();
+  const expensesAll = state.data.expenses.filter(
+    (e) => e.time >= range.start && e.time < range.end
+  );
+  const expensesTotal = expensesAll.reduce((s, e) => s + e.amount, 0);
+
+  const cur = computeBucket(range.start, range.end, scope === "all" ? null : scope);
+  const periodLength = period === "all" ? Math.max(cur.activeDays, 1) : range.days;
+  const dailyAvgRev = cur.revenue / periodLength;
+  const dailyAvgCust = cur.customers / periodLength;
+  const weeklyAvgRev = dailyAvgRev * 7;
+  const monthlyAvgRev = dailyAvgRev * 30;
+
+  // previous period for comparison (only meaningful for week/month)
+  let prev = null;
+  if (period !== "all") {
+    const prevRange = (() => {
+      if (period === "week") {
+        return { start: range.start - 7 * 86400000, end: range.start };
+      }
+      // month — previous calendar month
+      const s = new Date(range.start);
+      const ps = new Date(s.getFullYear(), s.getMonth() - 1, 1);
+      const pe = new Date(s.getFullYear(), s.getMonth(), 1);
+      return { start: ps.getTime(), end: pe.getTime() };
+    })();
+    prev = computeBucket(prevRange.start, prevRange.end, scope === "all" ? null : scope);
+  }
+
+  let html = `<div class="screen">`;
+
+  // Period pills
+  html += `<div class="pills">`;
+  for (const [val, lbl] of [["week", "Weekly"], ["month", "Monthly"], ["all", "All time"]]) {
+    html += `<button class="pill ${period === val ? "active" : ""}" data-action="set-analytics-period" data-value="${val}">${lbl}</button>`;
+  }
+  html += `</div>`;
+
+  // Scope pills
+  html += `<div class="pills">`;
+  for (const [val, lbl] of [["all", "Both barbers"], ["Sami", "Sami"], ["Amine", "Amine"]]) {
+    html += `<button class="pill ${scope === val ? "active" : ""}" data-action="set-analytics-scope" data-value="${val}">${lbl}</button>`;
+  }
+  html += `</div>`;
+
+  // Period nav
+  if (range.canNav) {
+    html += `<div class="week-nav">
+      <button data-action="analytics-prev">&larr; Prev</button>
+      <div class="week-label">${range.label}</div>
+      <button data-action="analytics-next" ${state.analytics.offset >= 0 ? "disabled style='opacity:0.4'" : ""}>Next &rarr;</button>
+    </div>`;
+  } else {
+    html += `<div class="week-nav"><div class="week-label" style="width:100%;text-align:center">${range.label}</div></div>`;
+  }
+
+  // Top totals card
+  html += `<div class="stat-card" style="margin-bottom:12px">
+    <h3>${scope === "all" ? "Total" : scope}</h3>
+    <div class="row"><span class="label">Customers</span><span class="value">${cur.customers}${prev ? ` <span class="trend">${fmtPct(cur.customers, prev.customers)}</span>` : ""}</span></div>
+    <div class="row"><span class="label">Revenue</span><span class="value">${fmtEuroInt(cur.revenue)}${prev ? ` <span class="trend">${fmtPct(cur.revenue, prev.revenue)}</span>` : ""}</span></div>
+    <div class="row"><span class="label">Avg / customer</span><span class="value">${fmtEuro(cur.avgPerCustomer)}</span></div>
+    <div class="row"><span class="label">Coupons used</span><span class="value">${cur.coupons}</span></div>
+    ${scope !== "all" ? `<div class="row"><span class="label">Acomptes taken</span><span class="value acompte-val">-${fmtEuroInt(cur.acomptes)}</span></div>` : `<div class="row"><span class="label">Expenses</span><span class="value expense-amt">-${fmtEuroInt(expensesTotal)}</span></div>`}
+  </div>`;
+
+  // Averages card
+  html += `<div class="stat-card" style="margin-bottom:12px">
+    <h3>Averages</h3>
+    <div class="row"><span class="label">Per day — revenue</span><span class="value">${fmtEuroInt(dailyAvgRev)}</span></div>
+    <div class="row"><span class="label">Per day — customers</span><span class="value">${dailyAvgCust.toFixed(1)}</span></div>
+    <div class="row"><span class="label">Per week (projected)</span><span class="value">${fmtEuroInt(weeklyAvgRev)}</span></div>
+    <div class="row"><span class="label">Per month (projected)</span><span class="value">${fmtEuroInt(monthlyAvgRev)}</span></div>
+    <div class="row"><span class="label">Active days</span><span class="value">${cur.activeDays} / ${periodLength}</span></div>
+  </div>`;
+
+  // Per-barber comparison (only when scope = all)
+  if (scope === "all") {
+    const sami = computeBucket(range.start, range.end, "Sami");
+    const amine = computeBucket(range.start, range.end, "Amine");
+    const maxRev = Math.max(sami.revenue, amine.revenue, 1);
+    html += `<div class="stat-card" style="margin-bottom:12px">
+      <h3>Sami vs Amine</h3>
+      <div class="cmp-row">
+        <div class="cmp-label">Sami</div>
+        <div class="cmp-bar"><div class="cmp-fill sami" style="width:${(sami.revenue / maxRev) * 100}%"></div></div>
+        <div class="cmp-val">${fmtEuroInt(sami.revenue)}</div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-label">Amine</div>
+        <div class="cmp-bar"><div class="cmp-fill amine" style="width:${(amine.revenue / maxRev) * 100}%"></div></div>
+        <div class="cmp-val">${fmtEuroInt(amine.revenue)}</div>
+      </div>
+      <div class="row" style="margin-top:10px"><span class="label">Customers</span><span class="value">${sami.customers} vs ${amine.customers}</span></div>
+      <div class="row"><span class="label">Avg / customer</span><span class="value">${fmtEuro(sami.avgPerCustomer)} vs ${fmtEuro(amine.avgPerCustomer)}</span></div>
+      <div class="row"><span class="label">Coupons</span><span class="value">${sami.coupons} vs ${amine.coupons}</span></div>
+      <div class="row"><span class="label">Acomptes</span><span class="value acompte-val">-${fmtEuroInt(sami.acomptes)} vs -${fmtEuroInt(amine.acomptes)}</span></div>
+    </div>`;
+
+    // Lead summary
+    const lead =
+      sami.revenue === amine.revenue
+        ? "Tied"
+        : sami.revenue > amine.revenue
+        ? `Sami is ahead by ${fmtEuroInt(sami.revenue - amine.revenue)}`
+        : `Amine is ahead by ${fmtEuroInt(amine.revenue - sami.revenue)}`;
+    html += `<div class="stat-card" style="margin-bottom:12px;text-align:center;font-weight:600">${lead}</div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
 function attachHandlers() {
   document.querySelectorAll("[data-tab]").forEach((el) => {
     el.addEventListener("click", () => {
@@ -883,6 +1072,25 @@ function handleAction(action, data) {
       break;
     case "download-pdf":
       generateWeeklyPDF();
+      break;
+    case "set-analytics-period":
+      state.analytics.period = data.value;
+      state.analytics.offset = 0;
+      render();
+      break;
+    case "set-analytics-scope":
+      state.analytics.scope = data.value;
+      render();
+      break;
+    case "analytics-prev":
+      state.analytics.offset--;
+      render();
+      break;
+    case "analytics-next":
+      if (state.analytics.offset < 0) {
+        state.analytics.offset++;
+        render();
+      }
       break;
     case "select-barber":
       state.selectedBarber = data.barber;

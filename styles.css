@@ -293,6 +293,54 @@ header h1 {
   color: #fbbf24;
   margin-top: 2px;
 }
+.pills {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+.pill {
+  flex: 1;
+  padding: 8px 6px;
+  border-radius: 999px;
+  border: 1px solid #334155;
+  background: #1e293b;
+  color: #cbd5e1;
+  font-size: 13px;
+  cursor: pointer;
+}
+.pill.active {
+  background: #3b82f6;
+  color: #fff;
+  border-color: #3b82f6;
+}
+.trend {
+  font-size: 11px;
+  font-weight: 600;
+  color: #94a3b8;
+  margin-left: 6px;
+}
+.cmp-row {
+  display: grid;
+  grid-template-columns: 60px 1fr 80px;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.cmp-label { color: #cbd5e1; font-size: 14px; }
+.cmp-bar {
+  background: #0f172a;
+  border-radius: 8px;
+  height: 16px;
+  overflow: hidden;
+}
+.cmp-fill {
+  height: 100%;
+  border-radius: 8px;
+  transition: width 0.3s;
+}
+.cmp-fill.sami { background: linear-gradient(90deg, #1e3a8a, #3b82f6); }
+.cmp-fill.amine { background: linear-gradient(90deg, #831843, #ec4899); }
+.cmp-val { text-align: right; font-weight: 600; font-size: 14px; }
 .pdf-btn {
   width: 100%;
   padding: 12px;
