@@ -88,26 +88,30 @@ header h1 {
 
 .secondary-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 12px;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
 }
-.depense-btn, .acompte-btn {
+.depense-btn, .acompte-btn, .product-btn {
   width: 100%;
-  padding: 14px;
+  padding: 14px 6px;
   color: white;
-  font-size: 16px;
+  font-size: 14px;
   font-weight: 600;
   border: none;
   border-radius: 12px;
   cursor: pointer;
-  letter-spacing: 0.5px;
+  letter-spacing: 0.4px;
 }
 .depense-btn { background: linear-gradient(135deg, #78350f, #d97706); }
 .acompte-btn { background: linear-gradient(135deg, #581c87, #a855f7); }
-.depense-btn:active, .acompte-btn:active { transform: scale(0.98); }
+.product-btn { background: linear-gradient(135deg, #064e3b, #10b981); }
+.depense-btn:active, .acompte-btn:active, .product-btn:active { transform: scale(0.98); }
 .entry.acompte-entry { background: rgba(168, 85, 247, 0.08); border-radius: 6px; }
 .entry .acompte-amt { color: #c084fc; }
 .row .acompte-val { color: #c084fc; }
+.entry.product-entry { background: rgba(16, 185, 129, 0.08); border-radius: 6px; }
+.entry .product-amt { color: #6ee7b7; }
+.row .product-val { color: #6ee7b7; }
 
 .amount-display {
   background: #1e293b;

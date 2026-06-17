@@ -17,7 +17,7 @@ const state = {
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
   pending: loadPending(),
-  data: { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [] },
+  data: { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [], products: [] },
 };
 
 function loadCache() {
@@ -42,7 +42,7 @@ function savePending() {
 }
 
 function rebuildData() {
-  const d = { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [] };
+  const d = { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [], products: [] };
   for (const e of state.events) {
     const time = Number(e.ts);
     if (e.deleted_at) {
@@ -75,6 +75,8 @@ function rebuildData() {
       d.checkins.push({ id: e.id, barber: e.barber, time, createdAt: e.created_at || null });
     else if (e.type === "acompte")
       d.acomptes.push({ id: e.id, barber: e.barber, amount: e.amount, time, createdAt: e.created_at || null });
+    else if (e.type === "product")
+      d.products.push({ id: e.id, barber: e.barber, amount: e.amount, time, createdAt: e.created_at || null });
   }
   state.data = d;
 }
@@ -288,14 +290,20 @@ function buildWeeklyReport() {
   const entries = state.data.entries.filter((e) => e.time >= start && e.time < end);
   const expenses = state.data.expenses.filter((e) => e.time >= start && e.time < end);
   const acomptes = state.data.acomptes.filter((e) => e.time >= start && e.time < end);
+  const products = state.data.products.filter((e) => e.time >= start && e.time < end);
 
   const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
   const cash = (arr) => arr.filter((e) => e.method === "ESP");
   const card = (arr) => arr.filter((e) => e.method === "CB");
 
+  const haircutGross = sum(entries, (e) => e.amount);
+  const productsTotal = sum(products, (e) => e.amount);
   const totals = {
     customers: entries.length,
-    gross: sum(entries, (e) => e.amount),
+    haircutGross,
+    productsTotal,
+    productsCount: products.length,
+    gross: haircutGross + productsTotal,
     cash: sum(cash(entries), (e) => e.amount),
     card: sum(card(entries), (e) => e.amount),
     expensesTotal: sum(expenses, (e) => e.amount),
@@ -307,12 +315,15 @@ function buildWeeklyReport() {
     const dStart = start + i * 86400000;
     const dEnd = dStart + 86400000;
     const dE = entries.filter((e) => e.time >= dStart && e.time < dEnd);
+    const dP = products.filter((e) => e.time >= dStart && e.time < dEnd);
+    const dPTotal = sum(dP, (e) => e.amount);
     days.push({
       date: new Date(dStart),
       customers: dE.length,
       cash: sum(cash(dE), (e) => e.amount),
       card: sum(card(dE), (e) => e.amount),
-      total: sum(dE, (e) => e.amount),
+      products: dPTotal,
+      total: sum(dE, (e) => e.amount) + dPTotal,
     });
   }
 
@@ -321,11 +332,17 @@ function buildWeeklyReport() {
   for (const b of BARBERS) {
     const bE = entries.filter((e) => e.barber === b);
     const bA = acomptes.filter((e) => e.barber === b);
-    const gross = sum(bE, (e) => e.amount);
+    const bP = products.filter((e) => e.barber === b);
+    const haircutGrossB = sum(bE, (e) => e.amount);
+    const productsB = sum(bP, (e) => e.amount);
+    const gross = haircutGrossB + productsB;
     const acompteTotal = sum(bA, (e) => e.amount);
     const shareGross = gross * SPLIT;
     barbers[b] = {
       customers: bE.length,
+      haircutGross: haircutGrossB,
+      products: productsB,
+      productCount: bP.length,
       gross,
       cash: sum(cash(bE), (e) => e.amount),
       card: sum(card(bE), (e) => e.amount),
@@ -386,10 +403,12 @@ function generateWeeklyPDF() {
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
   const sumRows = [
-    ["Total customers", `${r.totals.customers}`],
-    ["Gross revenue", money(r.totals.gross)],
+    ["Total customers (haircuts)", `${r.totals.customers}`],
+    ["Haircut revenue", money(r.totals.haircutGross)],
     ["    Cash (ESP)", money(r.totals.cash)],
     ["    Card (CB)", money(r.totals.card)],
+    ["Products sold", `${r.totals.productsCount}  (${money(r.totals.productsTotal)})`],
+    ["Gross revenue (haircuts + products)", money(r.totals.gross)],
     ["Expenses (Dépenses)", `- ${money(r.totals.expensesTotal)}`],
     ["Net revenue", money(r.totals.gross - r.totals.expensesTotal)],
   ];
@@ -445,9 +464,11 @@ function generateWeeklyPDF() {
     doc.setFont("helvetica", "normal");
     const rows = [
       ["Customers", `${s.customers}`],
-      ["Gross revenue", money(s.gross)],
+      ["Haircut revenue", money(s.haircutGross)],
       ["    Cash", money(s.cash)],
       ["    Card", money(s.card)],
+      ["Products sold", `${s.productCount}  (${money(s.products)})`],
+      ["Gross revenue (haircuts + products)", money(s.gross)],
       ["Coupons used", `${s.coupons}`],
       ["Acomptes (advances) taken", `- ${money(s.acomptes)}`],
     ];
@@ -514,7 +535,7 @@ function generateWeeklyPDF() {
 function render() {
   const root = document.getElementById("app");
   let html = `<header>
-    <h1>Barbershop</h1>
+    <h1>LX Barbershop</h1>
     <button id="sync-badge" class="sync-badge ${state.sync}" data-action="sync">${
     state.sync === "syncing" ? "Syncing…" : state.sync === "offline" ? "Offline – will retry" : "Synced"
   }</button>
@@ -547,6 +568,41 @@ function renderRegister() {
       <div class="secondary-actions">
         <button class="depense-btn" data-action="start-expense">Dépense</button>
         <button class="acompte-btn" data-action="start-acompte">Acompte</button>
+        <button class="product-btn" data-action="start-product">Product</button>
+      </div>
+    </div>`;
+  }
+
+  if (state.view === "product-barber") {
+    return `<div class="screen">
+      <button class="back-btn" data-action="back-home">&larr; Back</button>
+      <h2>Product sold — by who?</h2>
+      <div class="barbers">
+        <button class="barber-box sami" data-action="select-product-barber" data-barber="Sami">Sami</button>
+        <button class="barber-box amine" data-action="select-product-barber" data-barber="Amine">Amine</button>
+      </div>
+    </div>`;
+  }
+
+  if (state.view === "product-amount") {
+    const display = state.amount ? state.amount : "0";
+    const empty = state.amount ? "" : "empty";
+    const editing = state.editingId ? " (editing)" : "";
+    const curDate = state.entryDate || todayISO();
+    const backDated = curDate !== todayISO();
+    return `<div class="screen">
+      <button class="back-btn" data-action="back-home">&larr; ${state.editingId ? "Cancel" : "Back"}</button>
+      <h2>${state.selectedBarber} — Product amount?${editing}</h2>
+      ${state.editingId ? "" : `<div class="date-row ${backDated ? "backdated" : ""}">
+        <label for="entry-date-input">Date</label>
+        <input id="entry-date-input" class="date-input" type="date" value="${curDate}" max="${todayISO()}" min="${isoDaysAgo(60)}">
+      </div>`}
+      <div class="amount-display ${empty}">${display}<span class="currency">€</span></div>
+      <div class="keypad">
+        ${[1,2,3,4,5,6,7,8,9].map(n => `<button class="key" data-action="key" data-key="${n}">${n}</button>`).join("")}
+        <button class="key del" data-action="key" data-key="del">⌫</button>
+        <button class="key" data-action="key" data-key="0">0</button>
+        <button class="key ok" data-action="confirm-product">OK</button>
       </div>
     </div>`;
   }
@@ -703,10 +759,11 @@ function renderStats() {
   const expensesTotal = weekExpenses.reduce((s, e) => s + e.amount, 0);
 
   const weekAcomptes = state.data.acomptes.filter((e) => e.time >= start && e.time < end);
+  const weekProducts = state.data.products.filter((e) => e.time >= start && e.time < end);
 
   const stats = {};
   for (const b of BARBERS) {
-    stats[b] = { count: 0, esp: 0, cb: 0, total: 0, coupons: 0, acomptes: 0 };
+    stats[b] = { count: 0, esp: 0, cb: 0, total: 0, coupons: 0, acomptes: 0, products: 0 };
   }
   for (const e of weekEntries) {
     if (!stats[e.barber]) continue;
@@ -718,6 +775,12 @@ function renderStats() {
   }
   for (const a of weekAcomptes) {
     if (stats[a.barber]) stats[a.barber].acomptes += a.amount;
+  }
+  for (const p of weekProducts) {
+    if (stats[p.barber]) {
+      stats[p.barber].products += p.amount;
+      stats[p.barber].total += p.amount;
+    }
   }
 
   let html = `<div class="screen">
@@ -737,6 +800,7 @@ function renderStats() {
       <div class="row"><span class="label">Cash (ESP)</span><span class="value">${s.esp}€</span></div>
       <div class="row"><span class="label">Card (CB)</span><span class="value">${s.cb}€</span></div>
       <div class="row"><span class="label">Coupons</span><span class="value">${s.coupons}</span></div>
+      <div class="row"><span class="label">Products</span><span class="value product-val">+${s.products}€</span></div>
       <div class="row total"><span class="label">Total</span><span class="value">${s.total}€</span></div>
       <div class="row"><span class="label">Acomptes</span><span class="value acompte-val">-${s.acomptes}€</span></div>
     </div>`;
@@ -753,6 +817,7 @@ function renderStats() {
     ...weekEntries.map((e) => ({ ...e, kind: "entry" })),
     ...weekExpenses.map((e) => ({ ...e, kind: "expense" })),
     ...weekAcomptes.map((e) => ({ ...e, kind: "acompte" })),
+    ...weekProducts.map((e) => ({ ...e, kind: "product" })),
   ].sort((a, b) => b.time - a.time);
 
   html += `<div class="history"><h3>This week's activity (${merged.length})</h3>`;
@@ -790,6 +855,19 @@ function renderStats() {
             <button class="del-btn" data-action="delete-entry" data-kind="acompte" data-id="${e.id}" title="Delete">×</button>
           </div>
         </div>`;
+      } else if (e.kind === "product") {
+        html += `<div class="entry product-entry ${back ? "is-backdated" : ""}">
+          <div>
+            <span class="who">${e.barber} — Product</span>
+            <span class="meta">${formatDay(e.time)} ${formatTime(e.time)}</span>
+            ${backTag}
+          </div>
+          <div>
+            <span class="amt product-amt">${e.amount}€</span>
+            <button class="edit-btn" data-action="edit-entry" data-kind="product" data-id="${e.id}" title="Edit">✎</button>
+            <button class="del-btn" data-action="delete-entry" data-kind="product" data-id="${e.id}" title="Delete">×</button>
+          </div>
+        </div>`;
       } else {
         html += `<div class="entry ${back ? "is-backdated" : ""}">
           <div>
@@ -821,6 +899,8 @@ function renderStats() {
           ? "Dépense"
           : e.type === "acompte"
           ? `${e.barber} — Acompte`
+          : e.type === "product"
+          ? `${e.barber} — Product`
           : e.barber || e.type;
       const amt =
         e.type === "expense" || e.type === "acompte"
@@ -888,22 +968,30 @@ function computeBucket(start, end, barberFilter) {
   const sel = (e) => e.time >= start && e.time < end && (barberFilter ? e.barber === barberFilter : true);
   const entries = state.data.entries.filter(sel);
   const acomptes = state.data.acomptes.filter(sel);
+  const products = state.data.products.filter(sel);
   const cash = entries.filter((e) => e.method === "ESP");
   const card = entries.filter((e) => e.method === "CB");
-  const revenue = entries.reduce((s, e) => s + e.amount, 0);
+  const haircutRevenue = entries.reduce((s, e) => s + e.amount, 0);
+  const productsTotal = products.reduce((s, e) => s + e.amount, 0);
+  const revenue = haircutRevenue + productsTotal;
   const cashTotal = cash.reduce((s, e) => s + e.amount, 0);
   const cardTotal = card.reduce((s, e) => s + e.amount, 0);
   const coupons = entries.filter((e) => e.coupon).length;
   const acompteTotal = acomptes.reduce((s, e) => s + e.amount, 0);
-  const dayKeys = new Set(entries.map((e) => todayKey(e.time)));
+  const dayKeys = new Set(
+    [...entries, ...products].map((e) => todayKey(e.time))
+  );
   return {
     customers: entries.length,
     revenue,
+    haircutRevenue,
+    products: productsTotal,
+    productCount: products.length,
     cash: cashTotal,
     card: cardTotal,
     coupons,
     acomptes: acompteTotal,
-    avgPerCustomer: entries.length ? revenue / entries.length : 0,
+    avgPerCustomer: entries.length ? haircutRevenue / entries.length : 0,
     activeDays: dayKeys.size,
   };
 }
@@ -985,6 +1073,7 @@ function renderAnalytics() {
     <div class="row"><span class="label">Customers</span><span class="value">${cur.customers}${prev ? ` <span class="trend">${fmtPct(cur.customers, prev.customers)}</span>` : ""}</span></div>
     <div class="row"><span class="label">Revenue</span><span class="value">${fmtEuroInt(cur.revenue)}${prev ? ` <span class="trend">${fmtPct(cur.revenue, prev.revenue)}</span>` : ""}</span></div>
     <div class="row"><span class="label">Avg / customer</span><span class="value">${fmtEuro(cur.avgPerCustomer)}</span></div>
+    <div class="row"><span class="label">Products sold</span><span class="value product-val">${cur.productCount} (+${fmtEuroInt(cur.products)})</span></div>
     <div class="row"><span class="label">Coupons used</span><span class="value">${cur.coupons}</span></div>
     ${scope !== "all" ? `<div class="row"><span class="label">Acomptes taken</span><span class="value acompte-val">-${fmtEuroInt(cur.acomptes)}</span></div>` : `<div class="row"><span class="label">Expenses</span><span class="value expense-amt">-${fmtEuroInt(expensesTotal)}</span></div>`}
   </div>`;
@@ -1117,6 +1206,50 @@ function handleAction(action, data) {
       state.view = "acompte-barber";
       render();
       break;
+    case "start-product":
+      state.amount = "";
+      state.entryDate = null;
+      state.selectedBarber = null;
+      state.view = "product-barber";
+      render();
+      break;
+    case "select-product-barber":
+      state.selectedBarber = data.barber;
+      state.amount = "";
+      state.view = "product-amount";
+      render();
+      break;
+    case "confirm-product": {
+      const amt = parseInt(state.amount, 10);
+      if (!amt || amt <= 0) return;
+      if (state.editingId) {
+        localUpdate(state.editingId, { amount: amt });
+        showToast(`Product updated: ${amt}€`);
+        state.editingId = null;
+        state.tab = "stats";
+      } else {
+        const ts = tsFromEntryDate();
+        localInsert({
+          id: newId(),
+          type: "product",
+          barber: state.selectedBarber,
+          amount: amt,
+          ts,
+        });
+        showToast(
+          `Product sold: ${state.selectedBarber} ${amt}€${
+            state.entryDate ? " (backdated)" : ""
+          }`
+        );
+      }
+      state.view = "home";
+      state.amount = "";
+      state.selectedBarber = null;
+      state.entryDate = null;
+      render();
+      syncNow();
+      break;
+    }
     case "select-acompte-barber":
       state.selectedBarber = data.barber;
       state.amount = "";
@@ -1287,6 +1420,17 @@ function handleAction(action, data) {
         state.amount = String(ac.amount);
         state.tab = "register";
         state.view = "acompte-amount";
+        render();
+        return;
+      }
+      if (data.kind === "product") {
+        const pr = state.data.products.find((e) => e.id === data.id);
+        if (!pr) return;
+        state.editingId = pr.id;
+        state.selectedBarber = pr.barber;
+        state.amount = String(pr.amount);
+        state.tab = "register";
+        state.view = "product-amount";
         render();
         return;
       }

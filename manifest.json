@@ -1,7 +1,7 @@
 {
-  "name": "Barbershop Counter",
-  "short_name": "Barbershop",
-  "description": "Track customers, payments, expenses and acomptes for Sami and Amine.",
+  "name": "LX Barbershop",
+  "short_name": "LX Barber",
+  "description": "LX Barbershop — track customers, products, expenses and acomptes for Sami and Amine.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
