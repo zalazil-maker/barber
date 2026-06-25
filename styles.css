@@ -341,6 +341,109 @@ header h1 {
   color: #94a3b8;
   margin-left: 6px;
 }
+.trend.up { color: #22c55e; }
+.trend.down { color: #ef4444; }
+.analytics-headline {
+  margin-bottom: 12px;
+  background: linear-gradient(135deg, #1e293b, #0f172a);
+  border-left: 4px solid #3b82f6;
+}
+.hl-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  margin-bottom: 6px;
+}
+.hl-label { color: #94a3b8; font-size: 13px; }
+.hl-value { font-size: 28px; font-weight: 700; color: #f8fafc; }
+.hl-sub {
+  display: flex;
+  justify-content: space-between;
+  color: #cbd5e1;
+  font-size: 13px;
+  margin-top: 4px;
+}
+.progress-bar {
+  margin-top: 10px;
+  height: 6px;
+  background: #0f172a;
+  border-radius: 999px;
+  overflow: hidden;
+}
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #3b82f6, #8b5cf6);
+  border-radius: 999px;
+  transition: width 0.3s;
+}
+.insight-card {
+  background: #1e293b;
+  border-radius: 14px;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+.insight-card h3 {
+  margin: 0 0 8px;
+  font-size: 14px;
+  color: #cbd5e1;
+  font-weight: 600;
+}
+.insight-card p {
+  margin: 4px 0;
+  font-size: 14px;
+  color: #f1f5f9;
+  line-height: 1.45;
+}
+.insight-card p b { color: #fff; }
+.insight-card .insight-sub {
+  color: #94a3b8;
+  font-size: 13px;
+}
+.wd-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+  margin-top: 12px;
+}
+.wd-col {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.wd-bar {
+  width: 100%;
+  height: 50px;
+  background: #0f172a;
+  border-radius: 4px;
+  display: flex;
+  align-items: flex-end;
+  overflow: hidden;
+}
+.wd-fill {
+  width: 100%;
+  background: linear-gradient(180deg, #6366f1, #3b82f6);
+  border-radius: 4px;
+  transition: height 0.3s;
+}
+.wd-name { font-size: 10px; color: #94a3b8; margin-top: 4px; }
+.wd-val { font-size: 9px; color: #cbd5e1; }
+.mix-bar {
+  display: flex;
+  width: 100%;
+  height: 10px;
+  background: #0f172a;
+  border-radius: 999px;
+  overflow: hidden;
+  margin: 6px 0;
+}
+.mix-fill.esp { background: #22c55e; }
+.mix-fill.cb { background: #3b82f6; }
+.cmp-section-label {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 600;
+  margin: 8px 0 4px;
+}
 .cmp-row {
   display: grid;
   grid-template-columns: 60px 1fr 80px;

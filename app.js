@@ -1010,36 +1010,89 @@ function fmtPct(now, prev) {
 }
 
 function renderAnalytics() {
-  const { period, scope } = state.analytics;
+  const { period, scope, offset } = state.analytics;
   const range = getAnalyticsRange();
+  const barberFilter = scope === "all" ? null : scope;
   const expensesAll = state.data.expenses.filter(
     (e) => e.time >= range.start && e.time < range.end
   );
   const expensesTotal = expensesAll.reduce((s, e) => s + e.amount, 0);
 
-  const cur = computeBucket(range.start, range.end, scope === "all" ? null : scope);
-  const periodLength = period === "all" ? Math.max(cur.activeDays, 1) : range.days;
-  const dailyAvgRev = cur.revenue / periodLength;
-  const dailyAvgCust = cur.customers / periodLength;
-  const weeklyAvgRev = dailyAvgRev * 7;
-  const monthlyAvgRev = dailyAvgRev * 30;
+  const cur = computeBucket(range.start, range.end, barberFilter);
 
-  // previous period for comparison (only meaningful for week/month)
+  // Previous-period bucket
   let prev = null;
   if (period !== "all") {
-    const prevRange = (() => {
-      if (period === "week") {
-        return { start: range.start - 7 * 86400000, end: range.start };
-      }
-      // month — previous calendar month
-      const s = new Date(range.start);
-      const ps = new Date(s.getFullYear(), s.getMonth() - 1, 1);
-      const pe = new Date(s.getFullYear(), s.getMonth(), 1);
-      return { start: ps.getTime(), end: pe.getTime() };
-    })();
-    prev = computeBucket(prevRange.start, prevRange.end, scope === "all" ? null : scope);
+    const prevRange =
+      period === "week"
+        ? { start: range.start - 7 * 86400000, end: range.start }
+        : (() => {
+            const s = new Date(range.start);
+            const ps = new Date(s.getFullYear(), s.getMonth() - 1, 1);
+            const pe = new Date(s.getFullYear(), s.getMonth(), 1);
+            return { start: ps.getTime(), end: pe.getTime() };
+          })();
+    prev = computeBucket(prevRange.start, prevRange.end, barberFilter);
   }
 
+  // Period progress and projection
+  const isCurrentPeriod = offset === 0 && period !== "all";
+  const nowMs = Math.min(Date.now(), range.end - 1);
+  const elapsedMs = Math.max(0, nowMs - range.start);
+  const totalMs = range.end - range.start;
+  const elapsedDays = Math.max(
+    1,
+    Math.min(range.days, Math.ceil(elapsedMs / 86400000))
+  );
+  const totalDays = range.days;
+  const progressPct = period === "all" ? 100 : Math.round((elapsedMs / totalMs) * 100);
+
+  const canProject =
+    isCurrentPeriod && elapsedDays < totalDays && cur.revenue > 0;
+  const linearProj = canProject ? (cur.revenue / elapsedDays) * totalDays : null;
+  const projVsPrev =
+    canProject && prev && prev.revenue
+      ? ((linearProj - prev.revenue) / prev.revenue) * 100
+      : null;
+
+  // Weekday + hour patterns
+  const periodEntries = state.data.entries.filter(
+    (e) => e.time >= range.start && e.time < range.end && (!barberFilter || e.barber === barberFilter)
+  );
+  const periodProducts = state.data.products.filter(
+    (e) => e.time >= range.start && e.time < range.end && (!barberFilter || e.barber === barberFilter)
+  );
+  const wdNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const wdRev = [0, 0, 0, 0, 0, 0, 0];
+  const wdCount = [0, 0, 0, 0, 0, 0, 0];
+  const wdActiveDays = [new Set(), new Set(), new Set(), new Set(), new Set(), new Set(), new Set()];
+  for (const e of periodEntries) {
+    const d = new Date(e.time);
+    wdRev[d.getDay()] += e.amount;
+    wdCount[d.getDay()]++;
+    wdActiveDays[d.getDay()].add(todayKey(e.time));
+  }
+  for (const p of periodProducts) {
+    const d = new Date(p.time);
+    wdRev[d.getDay()] += p.amount;
+  }
+  const bestWdIdx = wdRev.indexOf(Math.max(...wdRev));
+  const bestWdHasData = wdRev[bestWdIdx] > 0;
+  const bestWdActiveCount = Math.max(1, wdActiveDays[bestWdIdx].size);
+  const bestWdAvg = wdRev[bestWdIdx] / bestWdActiveCount;
+
+  const hourBuckets = new Array(24).fill(0);
+  for (const e of periodEntries) hourBuckets[new Date(e.time).getHours()]++;
+  const bestHour = hourBuckets.indexOf(Math.max(...hourBuckets));
+  const bestHourHasData = hourBuckets[bestHour] > 0;
+
+  // Cash mix + coupon rate
+  const hairBase = cur.haircutRevenue || 1;
+  const cashPct = (cur.cash / hairBase) * 100;
+  const cardPct = (cur.card / hairBase) * 100;
+  const couponRate = cur.customers ? (cur.coupons / cur.customers) * 100 : 0;
+
+  // ----- Render -----
   let html = `<div class="screen">`;
 
   // Period pills
@@ -1061,40 +1114,134 @@ function renderAnalytics() {
     html += `<div class="week-nav">
       <button data-action="analytics-prev">&larr; Prev</button>
       <div class="week-label">${range.label}</div>
-      <button data-action="analytics-next" ${state.analytics.offset >= 0 ? "disabled style='opacity:0.4'" : ""}>Next &rarr;</button>
+      <button data-action="analytics-next" ${offset >= 0 ? "disabled style='opacity:0.4'" : ""}>Next &rarr;</button>
     </div>`;
   } else {
     html += `<div class="week-nav"><div class="week-label" style="width:100%;text-align:center">${range.label}</div></div>`;
   }
 
-  // Top totals card
-  html += `<div class="stat-card" style="margin-bottom:12px">
-    <h3>${scope === "all" ? "Total" : scope}</h3>
-    <div class="row"><span class="label">Customers</span><span class="value">${cur.customers}${prev ? ` <span class="trend">${fmtPct(cur.customers, prev.customers)}</span>` : ""}</span></div>
-    <div class="row"><span class="label">Revenue</span><span class="value">${fmtEuroInt(cur.revenue)}${prev ? ` <span class="trend">${fmtPct(cur.revenue, prev.revenue)}</span>` : ""}</span></div>
-    <div class="row"><span class="label">Avg / customer</span><span class="value">${fmtEuro(cur.avgPerCustomer)}</span></div>
-    <div class="row"><span class="label">Products sold</span><span class="value product-val">${cur.productCount} (+${fmtEuroInt(cur.products)})</span></div>
-    <div class="row"><span class="label">Coupons used</span><span class="value">${cur.coupons}</span></div>
-    ${scope !== "all" ? `<div class="row"><span class="label">Acomptes taken</span><span class="value acompte-val">-${fmtEuroInt(cur.acomptes)}</span></div>` : `<div class="row"><span class="label">Expenses</span><span class="value expense-amt">-${fmtEuroInt(expensesTotal)}</span></div>`}
+  // HEADLINE
+  const trendClass = (a, b) => (b ? (a >= b ? "up" : "down") : "");
+  const trendTxt = (a, b) => (b ? fmtPct(a, b) : "");
+  html += `<div class="stat-card analytics-headline">
+    <div class="hl-row">
+      <div class="hl-label">${scope === "all" ? "Total revenue" : `${scope}'s revenue`}</div>
+      <div class="hl-value">${fmtEuroInt(cur.revenue)} ${
+    prev ? `<span class="trend ${trendClass(cur.revenue, prev.revenue)}">${trendTxt(cur.revenue, prev.revenue)}</span>` : ""
+  }</div>
+    </div>
+    <div class="hl-sub">
+      <span>${cur.customers} customers ${prev ? `<span class="trend ${trendClass(cur.customers, prev.customers)}">${trendTxt(cur.customers, prev.customers)}</span>` : ""}</span>
+      <span>${fmtEuro(cur.avgPerCustomer)} avg ticket</span>
+    </div>
+    ${isCurrentPeriod ? `<div class="progress-bar"><div class="progress-fill" style="width:${progressPct}%"></div></div>
+      <div class="hl-sub"><span>Day ${elapsedDays} of ${totalDays}</span><span>${progressPct}% through</span></div>` : ""}
   </div>`;
 
-  // Averages card
-  html += `<div class="stat-card" style="margin-bottom:12px">
-    <h3>Averages</h3>
-    <div class="row"><span class="label">Per day — revenue</span><span class="value">${fmtEuroInt(dailyAvgRev)}</span></div>
-    <div class="row"><span class="label">Per day — customers</span><span class="value">${dailyAvgCust.toFixed(1)}</span></div>
-    <div class="row"><span class="label">Per week (projected)</span><span class="value">${fmtEuroInt(weeklyAvgRev)}</span></div>
-    <div class="row"><span class="label">Per month (projected)</span><span class="value">${fmtEuroInt(monthlyAvgRev)}</span></div>
-    <div class="row"><span class="label">Active days</span><span class="value">${cur.activeDays} / ${periodLength}</span></div>
+  // PROJECTION INSIGHT
+  if (canProject) {
+    const projTxt = `On current pace, ${period === "week" ? "this week" : "this month"} ends at <b>${fmtEuroInt(linearProj)}</b>.`;
+    const vsTxt =
+      projVsPrev != null
+        ? ` That's ${projVsPrev >= 0 ? "+" : ""}${projVsPrev.toFixed(0)}% vs ${
+            period === "week" ? "last week" : "last month"
+          } (${fmtEuroInt(prev.revenue)}).`
+        : "";
+    const remainDays = totalDays - elapsedDays;
+    const needPerDay = remainDays > 0 ? (linearProj - cur.revenue) / remainDays : 0;
+    html += `<div class="insight-card">
+      <h3>📈 Projection</h3>
+      <p>${projTxt}${vsTxt}</p>
+      <p class="insight-sub">Needs roughly <b>${fmtEuroInt(needPerDay)}/day</b> over the remaining ${remainDays} day${remainDays === 1 ? "" : "s"}.</p>
+    </div>`;
+  } else if (period !== "all" && prev) {
+    // Past period — compare totals
+    const delta = cur.revenue - prev.revenue;
+    const pct = prev.revenue ? (delta / prev.revenue) * 100 : 0;
+    html += `<div class="insight-card">
+      <h3>📊 Comparison</h3>
+      <p>${
+        delta >= 0
+          ? `Up <b>${fmtEuroInt(delta)}</b> (+${pct.toFixed(0)}%)`
+          : `Down <b>${fmtEuroInt(-delta)}</b> (${pct.toFixed(0)}%)`
+      } vs ${period === "week" ? "the week before" : "the month before"}.</p>
+    </div>`;
+  }
+
+  // PATTERNS
+  if (bestWdHasData || bestHourHasData) {
+    html += `<div class="insight-card">
+      <h3>🗓️ Patterns</h3>`;
+    if (bestWdHasData) {
+      const wdLine =
+        period === "week"
+          ? `Best day this week: <b>${wdNames[bestWdIdx]}</b> (${fmtEuroInt(wdRev[bestWdIdx])}, ${wdCount[bestWdIdx]} customer${wdCount[bestWdIdx] === 1 ? "" : "s"}).`
+          : `Best weekday: <b>${wdNames[bestWdIdx]}</b> — avg <b>${fmtEuroInt(bestWdAvg)}/day</b> across ${bestWdActiveCount} ${wdNames[bestWdIdx]}${bestWdActiveCount === 1 ? "" : "s"}.`;
+      html += `<p>${wdLine}</p>`;
+    }
+    if (bestHourHasData) {
+      const cnt = hourBuckets[bestHour];
+      html += `<p>Busiest hour: <b>${String(bestHour).padStart(2, "0")}:00</b> — ${cnt} customer${cnt === 1 ? "" : "s"}.</p>`;
+    }
+    // mini weekday bars
+    const wdMax = Math.max(...wdRev, 1);
+    const wdOrder = [1, 2, 3, 4, 5, 6, 0]; // Mon..Sun
+    html += `<div class="wd-grid">`;
+    for (const i of wdOrder) {
+      const h = (wdRev[i] / wdMax) * 100;
+      html += `<div class="wd-col">
+        <div class="wd-bar"><div class="wd-fill" style="height:${Math.max(h, 4)}%"></div></div>
+        <div class="wd-name">${wdNames[i].slice(0, 3)}</div>
+        <div class="wd-val">${wdRev[i] > 0 ? fmtEuroInt(wdRev[i]) : ""}</div>
+      </div>`;
+    }
+    html += `</div></div>`;
+  }
+
+  // MONEY MIX
+  html += `<div class="insight-card">
+    <h3>💶 Money mix</h3>
+    ${cur.haircutRevenue > 0 ? `<p><b>${cashPct.toFixed(0)}%</b> in cash, <b>${cardPct.toFixed(0)}%</b> by card on haircuts.</p>
+      <div class="mix-bar">
+        <div class="mix-fill esp" style="width:${cashPct}%"></div>
+        <div class="mix-fill cb" style="width:${cardPct}%"></div>
+      </div>` : `<p>No haircuts logged yet.</p>`}
+    ${cur.products > 0 ? `<p>Products: <b>${fmtEuroInt(cur.products)}</b> from ${cur.productCount} sale${cur.productCount === 1 ? "" : "s"} (<b>${((cur.products / Math.max(cur.revenue, 1)) * 100).toFixed(0)}%</b> of revenue).</p>` : ""}
+    ${cur.customers > 0 ? `<p>Coupons: <b>${cur.coupons}</b>/${cur.customers} customers (<b>${couponRate.toFixed(0)}%</b>) used the -20% discount.</p>` : ""}
+    ${scope === "all" ? `<p>Expenses: <b>-${fmtEuroInt(expensesTotal)}</b>. House net (after split + expenses): <b>${fmtEuroInt(cur.revenue * 0.5 - expensesTotal)}</b>.</p>` : `<p>Acomptes already taken: <b>-${fmtEuroInt(cur.acomptes)}</b>. Pending share: <b>${fmtEuroInt(cur.revenue * 0.5 - cur.acomptes)}</b>.</p>`}
   </div>`;
 
-  // Per-barber comparison (only when scope = all)
+  // SAMI vs AMINE (when both)
   if (scope === "all") {
     const sami = computeBucket(range.start, range.end, "Sami");
     const amine = computeBucket(range.start, range.end, "Amine");
     const maxRev = Math.max(sami.revenue, amine.revenue, 1);
+    const maxCust = Math.max(sami.customers, amine.customers, 1);
+
+    // Sentence insights
+    const lines = [];
+    if (sami.revenue !== amine.revenue) {
+      const lead = sami.revenue > amine.revenue ? "Sami" : "Amine";
+      const diff = Math.abs(sami.revenue - amine.revenue);
+      const pct = ((diff / Math.max(Math.min(sami.revenue, amine.revenue), 1)) * 100).toFixed(0);
+      lines.push(`<b>${lead}</b> brought in <b>${fmtEuroInt(diff)}</b> more (+${pct}%).`);
+    }
+    if (sami.customers !== amine.customers) {
+      const lead = sami.customers > amine.customers ? "Sami" : "Amine";
+      lines.push(`<b>${lead}</b> saw more customers (${sami.customers} vs ${amine.customers}).`);
+    }
+    if (sami.avgPerCustomer !== amine.avgPerCustomer && sami.customers && amine.customers) {
+      const lead = sami.avgPerCustomer > amine.avgPerCustomer ? "Sami" : "Amine";
+      lines.push(`<b>${lead}</b> has the higher avg ticket (${fmtEuro(sami.avgPerCustomer)} vs ${fmtEuro(amine.avgPerCustomer)}).`);
+    }
+    if (sami.products !== amine.products && (sami.products || amine.products)) {
+      const lead = sami.products > amine.products ? "Sami" : "Amine";
+      lines.push(`<b>${lead}</b> sold more products (${fmtEuroInt(sami.products)} vs ${fmtEuroInt(amine.products)}).`);
+    }
+
     html += `<div class="stat-card" style="margin-bottom:12px">
       <h3>Sami vs Amine</h3>
+      <div class="cmp-section-label">Revenue</div>
       <div class="cmp-row">
         <div class="cmp-label">Sami</div>
         <div class="cmp-bar"><div class="cmp-fill sami" style="width:${(sami.revenue / maxRev) * 100}%"></div></div>
@@ -1105,20 +1252,25 @@ function renderAnalytics() {
         <div class="cmp-bar"><div class="cmp-fill amine" style="width:${(amine.revenue / maxRev) * 100}%"></div></div>
         <div class="cmp-val">${fmtEuroInt(amine.revenue)}</div>
       </div>
-      <div class="row" style="margin-top:10px"><span class="label">Customers</span><span class="value">${sami.customers} vs ${amine.customers}</span></div>
-      <div class="row"><span class="label">Avg / customer</span><span class="value">${fmtEuro(sami.avgPerCustomer)} vs ${fmtEuro(amine.avgPerCustomer)}</span></div>
-      <div class="row"><span class="label">Coupons</span><span class="value">${sami.coupons} vs ${amine.coupons}</span></div>
-      <div class="row"><span class="label">Acomptes</span><span class="value acompte-val">-${fmtEuroInt(sami.acomptes)} vs -${fmtEuroInt(amine.acomptes)}</span></div>
+      <div class="cmp-section-label">Customers</div>
+      <div class="cmp-row">
+        <div class="cmp-label">Sami</div>
+        <div class="cmp-bar"><div class="cmp-fill sami" style="width:${(sami.customers / maxCust) * 100}%"></div></div>
+        <div class="cmp-val">${sami.customers}</div>
+      </div>
+      <div class="cmp-row">
+        <div class="cmp-label">Amine</div>
+        <div class="cmp-bar"><div class="cmp-fill amine" style="width:${(amine.customers / maxCust) * 100}%"></div></div>
+        <div class="cmp-val">${amine.customers}</div>
+      </div>
     </div>`;
 
-    // Lead summary
-    const lead =
-      sami.revenue === amine.revenue
-        ? "Tied"
-        : sami.revenue > amine.revenue
-        ? `Sami is ahead by ${fmtEuroInt(sami.revenue - amine.revenue)}`
-        : `Amine is ahead by ${fmtEuroInt(amine.revenue - sami.revenue)}`;
-    html += `<div class="stat-card" style="margin-bottom:12px;text-align:center;font-weight:600">${lead}</div>`;
+    if (lines.length) {
+      html += `<div class="insight-card">
+        <h3>🥊 Head-to-head</h3>`;
+      for (const l of lines) html += `<p>${l}</p>`;
+      html += `</div>`;
+    }
   }
 
   html += `</div>`;
