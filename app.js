@@ -964,6 +964,70 @@ function getAnalyticsRange() {
   return { start, end, label, days, canNav: true };
 }
 
+function buildHistoricalInsights() {
+  const all = [...state.data.entries, ...state.data.products];
+  if (all.length === 0) return null;
+
+  // --- Week-of-month average ---
+  const wmBuckets = new Map(); // "YYYY-MM-WM" -> total
+  for (const e of all) {
+    const d = new Date(e.time);
+    const wm = Math.ceil(d.getDate() / 7); // 1..5
+    const key = `${d.getFullYear()}-${d.getMonth()}-${wm}`;
+    wmBuckets.set(key, (wmBuckets.get(key) || 0) + e.amount);
+  }
+  const wmAgg = [0, 0, 0, 0, 0, 0].map(() => ({ total: 0, count: 0 }));
+  for (const [k, total] of wmBuckets) {
+    const wm = parseInt(k.split("-")[2], 10);
+    if (wm >= 1 && wm <= 5) {
+      wmAgg[wm].total += total;
+      wmAgg[wm].count += 1;
+    }
+  }
+  const wmAvg = wmAgg
+    .map((b, wm) => ({ wm, avg: b.count ? b.total / b.count : 0, count: b.count }))
+    .filter((x) => x.wm >= 1 && x.count > 0);
+  const bestWm = wmAvg.length ? wmAvg.reduce((a, b) => (a.avg > b.avg ? a : b)) : null;
+
+  // --- Weekday averages (per active day of that weekday) ---
+  const wdNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const wdTotal = [0, 0, 0, 0, 0, 0, 0];
+  const wdActive = wdNames.map(() => new Set());
+  for (const e of all) {
+    const d = new Date(e.time);
+    wdTotal[d.getDay()] += e.amount;
+    wdActive[d.getDay()].add(todayKey(e.time));
+  }
+  const wdAvg = wdTotal
+    .map((total, i) => ({
+      name: wdNames[i],
+      total,
+      active: wdActive[i].size,
+      avg: wdActive[i].size ? total / wdActive[i].size : 0,
+    }))
+    .filter((x) => x.active > 0);
+  const sortedWd = [...wdAvg].sort((a, b) => b.avg - a.avg);
+  const bestDays = sortedWd.slice(0, 2);
+  const bestNames = new Set(bestDays.map((d) => d.name));
+  const slowDays =
+    sortedWd.length > 2
+      ? [...sortedWd].sort((a, b) => a.avg - b.avg).filter((d) => !bestNames.has(d.name)).slice(0, 2)
+      : [];
+
+  // --- Highest single day on record ---
+  const dayMap = new Map();
+  for (const e of all) {
+    const k = todayKey(e.time);
+    dayMap.set(k, (dayMap.get(k) || 0) + e.amount);
+  }
+  let bestDay = null;
+  for (const [k, total] of dayMap) {
+    if (!bestDay || total > bestDay.total) bestDay = { date: k, total };
+  }
+
+  return { bestWm, wmAvg, bestDays, slowDays, bestDay, totalDaysOnRecord: dayMap.size };
+}
+
 function computeBucket(start, end, barberFilter) {
   const sel = (e) => e.time >= start && e.time < end && (barberFilter ? e.barber === barberFilter : true);
   const entries = state.data.entries.filter(sel);
@@ -1196,6 +1260,30 @@ function renderAnalytics() {
       </div>`;
     }
     html += `</div></div>`;
+  }
+
+  // ALL-TIME HISTORICAL PATTERNS (uses every event ever logged)
+  const hist = buildHistoricalInsights();
+  if (hist && hist.totalDaysOnRecord >= 2) {
+    const ord = ["", "1st", "2nd", "3rd", "4th", "5th"];
+    html += `<div class="insight-card">
+      <h3>📅 All-time patterns</h3>`;
+    if (hist.bestWm && hist.bestWm.count >= 2) {
+      html += `<p>Highest week of the month: <b>${ord[hist.bestWm.wm]} week</b> — avg <b>${fmtEuroInt(hist.bestWm.avg)}/week</b> (across ${hist.bestWm.count} months).</p>`;
+    }
+    if (hist.bestDays.length) {
+      const list = hist.bestDays.map((d) => `<b>${d.name}</b> (${fmtEuroInt(d.avg)})`).join(" and ");
+      html += `<p>Strongest days: ${list}.</p>`;
+    }
+    if (hist.slowDays.length) {
+      const list = hist.slowDays.map((d) => `<b>${d.name}</b> (${fmtEuroInt(d.avg)})`).join(" and ");
+      html += `<p>Slowest days: ${list}.</p>`;
+    }
+    if (hist.bestDay) {
+      html += `<p>Highest single day on record: <b>${formatDay(hist.bestDay.date)}</b> with <b>${fmtEuroInt(hist.bestDay.total)}</b>.</p>`;
+    }
+    html += `<p class="insight-sub">Based on ${hist.totalDaysOnRecord} day${hist.totalDaysOnRecord === 1 ? "" : "s"} of logged activity.</p>`;
+    html += `</div>`;
   }
 
   // MONEY MIX
