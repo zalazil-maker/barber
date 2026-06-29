@@ -327,7 +327,7 @@ function buildWeeklyReport() {
     });
   }
 
-  const SPLIT = 0.5; // 50% barber / 50% house, same for both barbers
+  const SPLIT = 0.5; // 50% barber / 50% house on haircuts; products are 100% house
   const barbers = {};
   for (const b of BARBERS) {
     const bE = entries.filter((e) => e.barber === b);
@@ -335,15 +335,13 @@ function buildWeeklyReport() {
     const bP = products.filter((e) => e.barber === b);
     const haircutGrossB = sum(bE, (e) => e.amount);
     const productsB = sum(bP, (e) => e.amount);
-    const gross = haircutGrossB + productsB;
     const acompteTotal = sum(bA, (e) => e.amount);
-    const shareGross = gross * SPLIT;
+    const shareGross = haircutGrossB * SPLIT; // products excluded from barber's share
     barbers[b] = {
       customers: bE.length,
       haircutGross: haircutGrossB,
       products: productsB,
       productCount: bP.length,
-      gross,
       cash: sum(cash(bE), (e) => e.amount),
       card: sum(card(bE), (e) => e.amount),
       coupons: bE.filter((e) => e.coupon).length,
@@ -353,7 +351,10 @@ function buildWeeklyReport() {
     };
   }
 
-  const houseGross = totals.gross * (1 - SPLIT);
+  // House: 50% of haircuts + 100% of products, minus expenses
+  const houseHaircutShare = totals.haircutGross * (1 - SPLIT);
+  const houseProducts = totals.productsTotal;
+  const houseGross = houseHaircutShare + houseProducts;
   const houseNet = houseGross - totals.expensesTotal;
 
   return {
@@ -362,6 +363,8 @@ function buildWeeklyReport() {
     totals,
     days,
     barbers,
+    houseHaircutShare,
+    houseProducts,
     houseGross,
     houseNet,
     split: SPLIT,
@@ -464,11 +467,10 @@ function generateWeeklyPDF() {
     doc.setFont("helvetica", "normal");
     const rows = [
       ["Customers", `${s.customers}`],
-      ["Haircut revenue", money(s.haircutGross)],
+      ["Haircut revenue (their share base)", money(s.haircutGross)],
       ["    Cash", money(s.cash)],
       ["    Card", money(s.card)],
-      ["Products sold", `${s.productCount}  (${money(s.products)})`],
-      ["Gross revenue (haircuts + products)", money(s.gross)],
+      ["Products sold (100% to house)", `${s.productCount}  (${money(s.products)})`],
       ["Coupons used", `${s.coupons}`],
       ["Acomptes (advances) taken", `- ${money(s.acomptes)}`],
     ];
@@ -485,13 +487,17 @@ function generateWeeklyPDF() {
   // SPLIT
   doc.setFont("helvetica", "bold");
   doc.setFontSize(14);
-  doc.text(`Split (${Math.round(r.split * 100)}% barber / ${Math.round((1 - r.split) * 100)}% house)`, M, y);
+  doc.text(
+    `Split: ${Math.round(r.split * 100)}% / ${Math.round((1 - r.split) * 100)}% on haircuts, products 100% house`,
+    M,
+    y
+  );
   y += 7;
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
   for (const b of BARBERS) {
     const s = r.barbers[b];
-    doc.text(`${b} share (${Math.round(r.split * 100)}% of ${money(s.gross)}):`, M, y);
+    doc.text(`${b} share (${Math.round(r.split * 100)}% of ${money(s.haircutGross)} haircuts):`, M, y);
     doc.text(money(s.shareGross), W - M, y, { align: "right" });
     y += 5.5;
     doc.text(`    Less Acomptes taken:`, M, y);
@@ -506,10 +512,18 @@ function generateWeeklyPDF() {
   doc.line(M, y, W - M, y);
   y += 6;
   doc.setFont("helvetica", "bold");
-  doc.text("House share (before expenses):", M, y);
-  doc.text(money(r.houseGross), W - M, y, { align: "right" });
+  doc.text("House income:", M, y);
   y += 6;
   doc.setFont("helvetica", "normal");
+  doc.text(`    ${Math.round((1 - r.split) * 100)}% of haircuts:`, M, y);
+  doc.text(money(r.houseHaircutShare), W - M, y, { align: "right" });
+  y += 5.5;
+  doc.text("    Products (100% to house):", M, y);
+  doc.text(money(r.houseProducts), W - M, y, { align: "right" });
+  y += 5.5;
+  doc.text("    House gross subtotal:", M, y);
+  doc.text(money(r.houseGross), W - M, y, { align: "right" });
+  y += 6;
   doc.text("Expenses (house absorbs):", M, y);
   doc.text(`- ${money(r.totals.expensesTotal)}`, W - M, y, { align: "right" });
   y += 6;
@@ -776,11 +790,10 @@ function renderStats() {
   for (const a of weekAcomptes) {
     if (stats[a.barber]) stats[a.barber].acomptes += a.amount;
   }
+  // Products are 100% house income — tracked per barber for stats but NOT added
+  // to the barber's Total (which represents their haircut share base).
   for (const p of weekProducts) {
-    if (stats[p.barber]) {
-      stats[p.barber].products += p.amount;
-      stats[p.barber].total += p.amount;
-    }
+    if (stats[p.barber]) stats[p.barber].products += p.amount;
   }
 
   let html = `<div class="screen">
@@ -800,8 +813,8 @@ function renderStats() {
       <div class="row"><span class="label">Cash (ESP)</span><span class="value">${s.esp}€</span></div>
       <div class="row"><span class="label">Card (CB)</span><span class="value">${s.cb}€</span></div>
       <div class="row"><span class="label">Coupons</span><span class="value">${s.coupons}</span></div>
-      <div class="row"><span class="label">Products</span><span class="value product-val">+${s.products}€</span></div>
-      <div class="row total"><span class="label">Total</span><span class="value">${s.total}€</span></div>
+      <div class="row total"><span class="label">Haircut total</span><span class="value">${s.total}€</span></div>
+      <div class="row"><span class="label">Products (house)</span><span class="value product-val">+${s.products}€</span></div>
       <div class="row"><span class="label">Acomptes</span><span class="value acompte-val">-${s.acomptes}€</span></div>
     </div>`;
   }
@@ -1309,7 +1322,7 @@ function renderAnalytics() {
       </div>` : `<p>No haircuts logged yet.</p>`}
     ${cur.products > 0 ? `<p>Products: <b>${fmtEuroInt(cur.products)}</b> from ${cur.productCount} sale${cur.productCount === 1 ? "" : "s"} (<b>${((cur.products / Math.max(cur.revenue, 1)) * 100).toFixed(0)}%</b> of revenue).</p>` : ""}
     ${cur.customers > 0 ? `<p>Coupons: <b>${cur.coupons}</b>/${cur.customers} customers (<b>${couponRate.toFixed(0)}%</b>) used the -20% discount.</p>` : ""}
-    ${scope === "all" ? `<p>Expenses: <b>-${fmtEuroInt(expensesTotal)}</b>. House net (after split + expenses): <b>${fmtEuroInt(cur.revenue * 0.5 - expensesTotal)}</b>.</p>` : `<p>Acomptes already taken: <b>-${fmtEuroInt(cur.acomptes)}</b>. Pending share: <b>${fmtEuroInt(cur.revenue * 0.5 - cur.acomptes)}</b>.</p>`}
+    ${scope === "all" ? `<p>Expenses: <b>-${fmtEuroInt(expensesTotal)}</b>. House net (50% haircuts + 100% products − expenses): <b>${fmtEuroInt(cur.haircutRevenue * 0.5 + cur.products - expensesTotal)}</b>.</p>` : `<p>Acomptes already taken: <b>-${fmtEuroInt(cur.acomptes)}</b>. Pending share (50% of haircuts): <b>${fmtEuroInt(cur.haircutRevenue * 0.5 - cur.acomptes)}</b>.</p>`}
   </div>`;
 
   // SAMI vs AMINE (when both)
