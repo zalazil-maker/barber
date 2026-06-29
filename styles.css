@@ -363,6 +363,12 @@ header h1 {
   font-size: 13px;
   margin-top: 4px;
 }
+.hl-caption {
+  margin-top: 6px;
+  font-size: 11px;
+  color: #94a3b8;
+  font-style: italic;
+}
 .progress-bar {
   margin-top: 10px;
   height: 6px;

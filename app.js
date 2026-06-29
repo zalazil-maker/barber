@@ -1086,16 +1086,16 @@ function renderAnalytics() {
 
   // Previous-period bucket
   let prev = null;
+  let prevRange = null;
   if (period !== "all") {
-    const prevRange =
-      period === "week"
-        ? { start: range.start - 7 * 86400000, end: range.start }
-        : (() => {
-            const s = new Date(range.start);
-            const ps = new Date(s.getFullYear(), s.getMonth() - 1, 1);
-            const pe = new Date(s.getFullYear(), s.getMonth(), 1);
-            return { start: ps.getTime(), end: pe.getTime() };
-          })();
+    if (period === "week") {
+      prevRange = { start: range.start - 7 * 86400000, end: range.start };
+    } else {
+      const s = new Date(range.start);
+      const ps = new Date(s.getFullYear(), s.getMonth() - 1, 1);
+      const pe = new Date(s.getFullYear(), s.getMonth(), 1);
+      prevRange = { start: ps.getTime(), end: pe.getTime() };
+    }
     prev = computeBucket(prevRange.start, prevRange.end, barberFilter);
   }
 
@@ -1110,6 +1110,15 @@ function renderAnalytics() {
   );
   const totalDays = range.days;
   const progressPct = period === "all" ? 100 : Math.round((elapsedMs / totalMs) * 100);
+
+  // Like-for-like slice of the previous period (same elapsed length) so the
+  // headline trend doesn't compare Day 1 of this week to a full last week.
+  let prevPartial = null;
+  if (isCurrentPeriod && prev && prevRange) {
+    const partialEnd = Math.min(prevRange.end, prevRange.start + elapsedMs);
+    prevPartial = computeBucket(prevRange.start, partialEnd, barberFilter);
+  }
+  const trendCmp = isCurrentPeriod ? prevPartial : prev;
 
   const canProject =
     isCurrentPeriod && elapsedDays < totalDays && cur.revenue > 0;
@@ -1187,17 +1196,21 @@ function renderAnalytics() {
   // HEADLINE
   const trendClass = (a, b) => (b ? (a >= b ? "up" : "down") : "");
   const trendTxt = (a, b) => (b ? fmtPct(a, b) : "");
+  const trendCaption = isCurrentPeriod
+    ? `vs same ${elapsedDays} day${elapsedDays === 1 ? "" : "s"} of ${period === "week" ? "last week" : "last month"}`
+    : `vs ${period === "week" ? "last week" : "last month"}`;
   html += `<div class="stat-card analytics-headline">
     <div class="hl-row">
       <div class="hl-label">${scope === "all" ? "Total revenue" : `${scope}'s revenue`}</div>
       <div class="hl-value">${fmtEuroInt(cur.revenue)} ${
-    prev ? `<span class="trend ${trendClass(cur.revenue, prev.revenue)}">${trendTxt(cur.revenue, prev.revenue)}</span>` : ""
+    trendCmp ? `<span class="trend ${trendClass(cur.revenue, trendCmp.revenue)}">${trendTxt(cur.revenue, trendCmp.revenue)}</span>` : ""
   }</div>
     </div>
     <div class="hl-sub">
-      <span>${cur.customers} customers ${prev ? `<span class="trend ${trendClass(cur.customers, prev.customers)}">${trendTxt(cur.customers, prev.customers)}</span>` : ""}</span>
+      <span>${cur.customers} customers ${trendCmp ? `<span class="trend ${trendClass(cur.customers, trendCmp.customers)}">${trendTxt(cur.customers, trendCmp.customers)}</span>` : ""}</span>
       <span>${fmtEuro(cur.avgPerCustomer)} avg ticket</span>
     </div>
+    ${trendCmp ? `<div class="hl-caption">${trendCaption}</div>` : ""}
     ${isCurrentPeriod ? `<div class="progress-bar"><div class="progress-fill" style="width:${progressPct}%"></div></div>
       <div class="hl-sub"><span>Day ${elapsedDays} of ${totalDays}</span><span>${progressPct}% through</span></div>` : ""}
   </div>`;
