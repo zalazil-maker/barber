@@ -1,4 +1,18 @@
-const BARBERS = ["Momo", "Amine"];
+const BARBERS = ["Momo", "Amine"]; // Currently-employed barbers (used for input UI + Check-In)
+// Sami was fired and replaced by Momo. Historical rows before this date still
+// belong to Sami and should be shown as such in past-week Stats / Analytics.
+const MOMO_START = new Date(2026, 6, 2).getTime(); // July 2, 2026
+
+function barbersForRange(startMs, endMs) {
+  const list = [];
+  if (startMs < MOMO_START) list.push("Sami");
+  if (endMs > MOMO_START) list.push("Momo");
+  list.push("Amine");
+  return list;
+}
+function barberColorClass(name) {
+  return name === "Amine" ? "amine" : "sami";
+}
 // Set by the setup: the Cloudflare worker address that safely talks to Neon.
 const WORKER_URL = "https://barbershop.ezalazil.workers.dev";
 const EVENTS_KEY = "barbershop_events_v1";
@@ -328,8 +342,9 @@ function buildWeeklyReport() {
   }
 
   const SPLIT = 0.5; // 50% barber / 50% house on haircuts; products are 100% house
+  const reportBarbers = barbersForRange(start, end);
   const barbers = {};
-  for (const b of BARBERS) {
+  for (const b of reportBarbers) {
     const bE = entries.filter((e) => e.barber === b);
     const bA = acomptes.filter((e) => e.barber === b);
     const bP = products.filter((e) => e.barber === b);
@@ -363,6 +378,7 @@ function buildWeeklyReport() {
     totals,
     days,
     barbers,
+    barberNames: reportBarbers,
     houseHaircutShare,
     houseProducts,
     houseGross,
@@ -459,7 +475,7 @@ function generateWeeklyPDF() {
   doc.text("Per barber", M, y);
   y += 7;
   doc.setFontSize(11);
-  for (const b of BARBERS) {
+  for (const b of r.barberNames) {
     const s = r.barbers[b];
     doc.setFont("helvetica", "bold");
     doc.text(b, M, y);
@@ -495,7 +511,7 @@ function generateWeeklyPDF() {
   y += 7;
   doc.setFont("helvetica", "normal");
   doc.setFontSize(11);
-  for (const b of BARBERS) {
+  for (const b of r.barberNames) {
     const s = r.barbers[b];
     doc.text(`${b} share (${Math.round(r.split * 100)}% of ${money(s.haircutGross)} haircuts):`, M, y);
     doc.text(money(s.shareGross), W - M, y, { align: "right" });
@@ -775,8 +791,9 @@ function renderStats() {
   const weekAcomptes = state.data.acomptes.filter((e) => e.time >= start && e.time < end);
   const weekProducts = state.data.products.filter((e) => e.time >= start && e.time < end);
 
+  const displayBarbers = barbersForRange(start, end);
   const stats = {};
-  for (const b of BARBERS) {
+  for (const b of displayBarbers) {
     stats[b] = { count: 0, esp: 0, cb: 0, total: 0, coupons: 0, acomptes: 0, products: 0 };
   }
   for (const e of weekEntries) {
@@ -805,7 +822,7 @@ function renderStats() {
     <button class="pdf-btn" data-action="download-pdf">📄 Download weekly PDF report</button>
     <div class="summary">`;
 
-  for (const b of BARBERS) {
+  for (const b of displayBarbers) {
     const s = stats[b];
     html += `<div class="stat-card">
       <h3>${b}</h3>
@@ -1188,10 +1205,15 @@ function renderAnalytics() {
   }
   html += `</div>`;
 
-  // Scope pills
+  // Scope pills (dynamic — Sami appears only when viewing his era)
+  const scopeBarbers = barbersForRange(range.start, range.end);
+  const scopeOptions = [["all", scopeBarbers.length > 2 ? "All barbers" : "Both barbers"]];
+  for (const b of scopeBarbers) scopeOptions.push([b, b]);
+  // If the user's saved scope isn't in this range (e.g. Momo scope on a pre-July week), fall back to all
+  if (scope !== "all" && !scopeBarbers.includes(scope)) state.analytics.scope = "all";
   html += `<div class="pills">`;
-  for (const [val, lbl] of [["all", "Both barbers"], ["Momo", "Momo"], ["Amine", "Amine"]]) {
-    html += `<button class="pill ${scope === val ? "active" : ""}" data-action="set-analytics-scope" data-value="${val}">${lbl}</button>`;
+  for (const [val, lbl] of scopeOptions) {
+    html += `<button class="pill ${state.analytics.scope === val ? "active" : ""}" data-action="set-analytics-scope" data-value="${val}">${lbl}</button>`;
   }
   html += `</div>`;
 
@@ -1325,65 +1347,70 @@ function renderAnalytics() {
     ${scope === "all" ? `<p>Expenses: <b>-${fmtEuroInt(expensesTotal)}</b>. House net (50% haircuts + 100% products − expenses): <b>${fmtEuroInt(cur.haircutRevenue * 0.5 + cur.products - expensesTotal)}</b>.</p>` : `<p>Acomptes already taken: <b>-${fmtEuroInt(cur.acomptes)}</b>. Pending share (50% of haircuts): <b>${fmtEuroInt(cur.haircutRevenue * 0.5 - cur.acomptes)}</b>.</p>`}
   </div>`;
 
-  // SAMI vs AMINE (when both)
-  if (scope === "all") {
-    const momo = computeBucket(range.start, range.end, "Momo");
-    const amine = computeBucket(range.start, range.end, "Amine");
-    const maxRev = Math.max(momo.revenue, amine.revenue, 1);
-    const maxCust = Math.max(momo.customers, amine.customers, 1);
+  // Barber comparison (whoever was active in this range)
+  if (scope === "all" && scopeBarbers.length >= 2) {
+    const buckets = scopeBarbers.map((b) => ({
+      name: b,
+      bucket: computeBucket(range.start, range.end, b),
+    }));
+    const maxRev = Math.max(...buckets.map((x) => x.bucket.revenue), 1);
+    const maxCust = Math.max(...buckets.map((x) => x.bucket.customers), 1);
+    const title =
+      scopeBarbers.length === 2
+        ? `${scopeBarbers[0]} vs ${scopeBarbers[1]}`
+        : `${scopeBarbers.join(" vs ")}`;
 
-    // Sentence insights
-    const lines = [];
-    if (momo.revenue !== amine.revenue) {
-      const lead = momo.revenue > amine.revenue ? "Momo" : "Amine";
-      const diff = Math.abs(momo.revenue - amine.revenue);
-      const pct = ((diff / Math.max(Math.min(momo.revenue, amine.revenue), 1)) * 100).toFixed(0);
-      lines.push(`<b>${lead}</b> brought in <b>${fmtEuroInt(diff)}</b> more (+${pct}%).`);
+    let cmpHtml = `<div class="stat-card" style="margin-bottom:12px">
+      <h3>${title}</h3>
+      <div class="cmp-section-label">Revenue</div>`;
+    for (const { name, bucket } of buckets) {
+      cmpHtml += `<div class="cmp-row">
+        <div class="cmp-label">${name}</div>
+        <div class="cmp-bar"><div class="cmp-fill ${barberColorClass(name)}" style="width:${(bucket.revenue / maxRev) * 100}%"></div></div>
+        <div class="cmp-val">${fmtEuroInt(bucket.revenue)}</div>
+      </div>`;
     }
-    if (momo.customers !== amine.customers) {
-      const lead = momo.customers > amine.customers ? "Momo" : "Amine";
-      lines.push(`<b>${lead}</b> saw more customers (${momo.customers} vs ${amine.customers}).`);
+    cmpHtml += `<div class="cmp-section-label">Customers</div>`;
+    for (const { name, bucket } of buckets) {
+      cmpHtml += `<div class="cmp-row">
+        <div class="cmp-label">${name}</div>
+        <div class="cmp-bar"><div class="cmp-fill ${barberColorClass(name)}" style="width:${(bucket.customers / maxCust) * 100}%"></div></div>
+        <div class="cmp-val">${bucket.customers}</div>
+      </div>`;
     }
-    if (momo.avgPerCustomer !== amine.avgPerCustomer && momo.customers && amine.customers) {
-      const lead = momo.avgPerCustomer > amine.avgPerCustomer ? "Momo" : "Amine";
-      lines.push(`<b>${lead}</b> has the higher avg ticket (${fmtEuro(momo.avgPerCustomer)} vs ${fmtEuro(amine.avgPerCustomer)}).`);
-    }
-    if (momo.products !== amine.products && (momo.products || amine.products)) {
-      const lead = momo.products > amine.products ? "Momo" : "Amine";
-      lines.push(`<b>${lead}</b> sold more products (${fmtEuroInt(momo.products)} vs ${fmtEuroInt(amine.products)}).`);
-    }
+    cmpHtml += `</div>`;
+    html += cmpHtml;
 
-    html += `<div class="stat-card" style="margin-bottom:12px">
-      <h3>Momo vs Amine</h3>
-      <div class="cmp-section-label">Revenue</div>
-      <div class="cmp-row">
-        <div class="cmp-label">Momo</div>
-        <div class="cmp-bar"><div class="cmp-fill sami" style="width:${(momo.revenue / maxRev) * 100}%"></div></div>
-        <div class="cmp-val">${fmtEuroInt(momo.revenue)}</div>
-      </div>
-      <div class="cmp-row">
-        <div class="cmp-label">Amine</div>
-        <div class="cmp-bar"><div class="cmp-fill amine" style="width:${(amine.revenue / maxRev) * 100}%"></div></div>
-        <div class="cmp-val">${fmtEuroInt(amine.revenue)}</div>
-      </div>
-      <div class="cmp-section-label">Customers</div>
-      <div class="cmp-row">
-        <div class="cmp-label">Momo</div>
-        <div class="cmp-bar"><div class="cmp-fill sami" style="width:${(momo.customers / maxCust) * 100}%"></div></div>
-        <div class="cmp-val">${momo.customers}</div>
-      </div>
-      <div class="cmp-row">
-        <div class="cmp-label">Amine</div>
-        <div class="cmp-bar"><div class="cmp-fill amine" style="width:${(amine.customers / maxCust) * 100}%"></div></div>
-        <div class="cmp-val">${amine.customers}</div>
-      </div>
-    </div>`;
-
-    if (lines.length) {
-      html += `<div class="insight-card">
-        <h3>🥊 Head-to-head</h3>`;
-      for (const l of lines) html += `<p>${l}</p>`;
-      html += `</div>`;
+    // Head-to-head sentences only when exactly 2 barbers in the range
+    if (scopeBarbers.length === 2) {
+      const [aName, bName] = scopeBarbers;
+      const a = buckets[0].bucket;
+      const b = buckets[1].bucket;
+      const lines = [];
+      if (a.revenue !== b.revenue) {
+        const lead = a.revenue > b.revenue ? aName : bName;
+        const diff = Math.abs(a.revenue - b.revenue);
+        const pct = ((diff / Math.max(Math.min(a.revenue, b.revenue), 1)) * 100).toFixed(0);
+        lines.push(`<b>${lead}</b> brought in <b>${fmtEuroInt(diff)}</b> more (+${pct}%).`);
+      }
+      if (a.customers !== b.customers) {
+        const lead = a.customers > b.customers ? aName : bName;
+        lines.push(`<b>${lead}</b> saw more customers (${a.customers} vs ${b.customers}).`);
+      }
+      if (a.avgPerCustomer !== b.avgPerCustomer && a.customers && b.customers) {
+        const lead = a.avgPerCustomer > b.avgPerCustomer ? aName : bName;
+        lines.push(`<b>${lead}</b> has the higher avg ticket (${fmtEuro(a.avgPerCustomer)} vs ${fmtEuro(b.avgPerCustomer)}).`);
+      }
+      if (a.products !== b.products && (a.products || b.products)) {
+        const lead = a.products > b.products ? aName : bName;
+        lines.push(`<b>${lead}</b> sold more products (${fmtEuroInt(a.products)} vs ${fmtEuroInt(b.products)}).`);
+      }
+      if (lines.length) {
+        html += `<div class="insight-card">
+          <h3>🥊 Head-to-head</h3>`;
+        for (const l of lines) html += `<p>${l}</p>`;
+        html += `</div>`;
+      }
     }
   }
 

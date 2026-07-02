@@ -1,4 +1,4 @@
-const CACHE = "barber-v8";
+const CACHE = "barber-v9";
 const ASSETS = [
   "./",
   "./index.html",
