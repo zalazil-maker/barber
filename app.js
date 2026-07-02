@@ -1,4 +1,4 @@
-const BARBERS = ["Sami", "Amine"];
+const BARBERS = ["Momo", "Amine"];
 // Set by the setup: the Cloudflare worker address that safely talks to Neon.
 const WORKER_URL = "https://barbershop.ezalazil.workers.dev";
 const EVENTS_KEY = "barbershop_events_v1";
@@ -576,7 +576,7 @@ function renderRegister() {
     return `<div class="screen">
       <h2>Who served the customer?</h2>
       <div class="barbers">
-        <button class="barber-box sami" data-action="select-barber" data-barber="Sami">Sami</button>
+        <button class="barber-box sami" data-action="select-barber" data-barber="Momo">Momo</button>
         <button class="barber-box amine" data-action="select-barber" data-barber="Amine">Amine</button>
       </div>
       <div class="secondary-actions">
@@ -592,7 +592,7 @@ function renderRegister() {
       <button class="back-btn" data-action="back-home">&larr; Back</button>
       <h2>Product sold — by who?</h2>
       <div class="barbers">
-        <button class="barber-box sami" data-action="select-product-barber" data-barber="Sami">Sami</button>
+        <button class="barber-box sami" data-action="select-product-barber" data-barber="Momo">Momo</button>
         <button class="barber-box amine" data-action="select-product-barber" data-barber="Amine">Amine</button>
       </div>
     </div>`;
@@ -626,7 +626,7 @@ function renderRegister() {
       <button class="back-btn" data-action="back-home">&larr; Back</button>
       <h2>Acompte — Who's taking it?</h2>
       <div class="barbers">
-        <button class="barber-box sami" data-action="select-acompte-barber" data-barber="Sami">Sami</button>
+        <button class="barber-box sami" data-action="select-acompte-barber" data-barber="Momo">Momo</button>
         <button class="barber-box amine" data-action="select-acompte-barber" data-barber="Amine">Amine</button>
       </div>
     </div>`;
@@ -1190,7 +1190,7 @@ function renderAnalytics() {
 
   // Scope pills
   html += `<div class="pills">`;
-  for (const [val, lbl] of [["all", "Both barbers"], ["Sami", "Sami"], ["Amine", "Amine"]]) {
+  for (const [val, lbl] of [["all", "Both barbers"], ["Momo", "Momo"], ["Amine", "Amine"]]) {
     html += `<button class="pill ${scope === val ? "active" : ""}" data-action="set-analytics-scope" data-value="${val}">${lbl}</button>`;
   }
   html += `</div>`;
@@ -1327,39 +1327,39 @@ function renderAnalytics() {
 
   // SAMI vs AMINE (when both)
   if (scope === "all") {
-    const sami = computeBucket(range.start, range.end, "Sami");
+    const momo = computeBucket(range.start, range.end, "Momo");
     const amine = computeBucket(range.start, range.end, "Amine");
-    const maxRev = Math.max(sami.revenue, amine.revenue, 1);
-    const maxCust = Math.max(sami.customers, amine.customers, 1);
+    const maxRev = Math.max(momo.revenue, amine.revenue, 1);
+    const maxCust = Math.max(momo.customers, amine.customers, 1);
 
     // Sentence insights
     const lines = [];
-    if (sami.revenue !== amine.revenue) {
-      const lead = sami.revenue > amine.revenue ? "Sami" : "Amine";
-      const diff = Math.abs(sami.revenue - amine.revenue);
-      const pct = ((diff / Math.max(Math.min(sami.revenue, amine.revenue), 1)) * 100).toFixed(0);
+    if (momo.revenue !== amine.revenue) {
+      const lead = momo.revenue > amine.revenue ? "Momo" : "Amine";
+      const diff = Math.abs(momo.revenue - amine.revenue);
+      const pct = ((diff / Math.max(Math.min(momo.revenue, amine.revenue), 1)) * 100).toFixed(0);
       lines.push(`<b>${lead}</b> brought in <b>${fmtEuroInt(diff)}</b> more (+${pct}%).`);
     }
-    if (sami.customers !== amine.customers) {
-      const lead = sami.customers > amine.customers ? "Sami" : "Amine";
-      lines.push(`<b>${lead}</b> saw more customers (${sami.customers} vs ${amine.customers}).`);
+    if (momo.customers !== amine.customers) {
+      const lead = momo.customers > amine.customers ? "Momo" : "Amine";
+      lines.push(`<b>${lead}</b> saw more customers (${momo.customers} vs ${amine.customers}).`);
     }
-    if (sami.avgPerCustomer !== amine.avgPerCustomer && sami.customers && amine.customers) {
-      const lead = sami.avgPerCustomer > amine.avgPerCustomer ? "Sami" : "Amine";
-      lines.push(`<b>${lead}</b> has the higher avg ticket (${fmtEuro(sami.avgPerCustomer)} vs ${fmtEuro(amine.avgPerCustomer)}).`);
+    if (momo.avgPerCustomer !== amine.avgPerCustomer && momo.customers && amine.customers) {
+      const lead = momo.avgPerCustomer > amine.avgPerCustomer ? "Momo" : "Amine";
+      lines.push(`<b>${lead}</b> has the higher avg ticket (${fmtEuro(momo.avgPerCustomer)} vs ${fmtEuro(amine.avgPerCustomer)}).`);
     }
-    if (sami.products !== amine.products && (sami.products || amine.products)) {
-      const lead = sami.products > amine.products ? "Sami" : "Amine";
-      lines.push(`<b>${lead}</b> sold more products (${fmtEuroInt(sami.products)} vs ${fmtEuroInt(amine.products)}).`);
+    if (momo.products !== amine.products && (momo.products || amine.products)) {
+      const lead = momo.products > amine.products ? "Momo" : "Amine";
+      lines.push(`<b>${lead}</b> sold more products (${fmtEuroInt(momo.products)} vs ${fmtEuroInt(amine.products)}).`);
     }
 
     html += `<div class="stat-card" style="margin-bottom:12px">
-      <h3>Sami vs Amine</h3>
+      <h3>Momo vs Amine</h3>
       <div class="cmp-section-label">Revenue</div>
       <div class="cmp-row">
-        <div class="cmp-label">Sami</div>
-        <div class="cmp-bar"><div class="cmp-fill sami" style="width:${(sami.revenue / maxRev) * 100}%"></div></div>
-        <div class="cmp-val">${fmtEuroInt(sami.revenue)}</div>
+        <div class="cmp-label">Momo</div>
+        <div class="cmp-bar"><div class="cmp-fill sami" style="width:${(momo.revenue / maxRev) * 100}%"></div></div>
+        <div class="cmp-val">${fmtEuroInt(momo.revenue)}</div>
       </div>
       <div class="cmp-row">
         <div class="cmp-label">Amine</div>
@@ -1368,9 +1368,9 @@ function renderAnalytics() {
       </div>
       <div class="cmp-section-label">Customers</div>
       <div class="cmp-row">
-        <div class="cmp-label">Sami</div>
-        <div class="cmp-bar"><div class="cmp-fill sami" style="width:${(sami.customers / maxCust) * 100}%"></div></div>
-        <div class="cmp-val">${sami.customers}</div>
+        <div class="cmp-label">Momo</div>
+        <div class="cmp-bar"><div class="cmp-fill sami" style="width:${(momo.customers / maxCust) * 100}%"></div></div>
+        <div class="cmp-val">${momo.customers}</div>
       </div>
       <div class="cmp-row">
         <div class="cmp-label">Amine</div>

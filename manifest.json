@@ -1,7 +1,7 @@
 {
   "name": "LX Barbershop",
   "short_name": "LX Barber",
-  "description": "LX Barbershop — track customers, products, expenses and acomptes for Sami and Amine.",
+  "description": "LX Barbershop — track customers, products, expenses and acomptes for Momo and Amine.",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",

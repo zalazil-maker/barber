@@ -1,6 +1,6 @@
 # Barbershop Counter
 
-A simple offline app for a 2-barber shop (Sami & Amine). Tracks customers, payments (Cash/Card), and arrival check-ins.
+A simple offline app for a 2-barber shop (Momo & Amine). Tracks customers, payments (Cash/Card), and arrival check-ins.
 
 ## Usage
 
