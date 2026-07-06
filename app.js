@@ -24,6 +24,7 @@ const state = {
   selectedBarber: null,
   amount: "",
   weekOffset: 0,
+  selectedDayOffset: null, // null = whole week; 0..6 = single day within current week
   editingId: null,
   coupon: false,
   entryDate: null, // YYYY-MM-DD; null = today
@@ -783,7 +784,12 @@ function renderCheckin() {
 }
 
 function renderStats() {
-  const { start, end } = getCurrentWeekRange();
+  const week = getCurrentWeekRange();
+  // Optional single-day filter within the current week
+  const dayOff = state.selectedDayOffset;
+  const start = dayOff == null ? week.start : week.start + dayOff * 86400000;
+  const end = dayOff == null ? week.end : start + 86400000;
+  const isDayView = dayOff != null;
   const weekEntries = state.data.entries.filter((e) => e.time >= start && e.time < end);
   const weekExpenses = state.data.expenses.filter((e) => e.time >= start && e.time < end);
   const expensesTotal = weekExpenses.reduce((s, e) => s + e.amount, 0);
@@ -791,7 +797,7 @@ function renderStats() {
   const weekAcomptes = state.data.acomptes.filter((e) => e.time >= start && e.time < end);
   const weekProducts = state.data.products.filter((e) => e.time >= start && e.time < end);
 
-  const displayBarbers = barbersForRange(start, end);
+  const displayBarbers = barbersForRange(week.start, week.end);
   const stats = {};
   for (const b of displayBarbers) {
     stats[b] = { count: 0, esp: 0, cb: 0, total: 0, coupons: 0, acomptes: 0, products: 0 };
@@ -813,12 +819,35 @@ function renderStats() {
     if (stats[p.barber]) stats[p.barber].products += p.amount;
   }
 
+  // Build day pills for the current week (Week + 7 days)
+  const dayPillsHtml = (() => {
+    let s = `<div class="pills day-pills">`;
+    s += `<button class="pill ${dayOff == null ? "active" : ""}" data-action="set-day" data-value="">Week</button>`;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(week.start + i * 86400000);
+      const short = d.toLocaleDateString(undefined, { weekday: "short" });
+      const dnum = d.getDate();
+      s += `<button class="pill ${dayOff === i ? "active" : ""}" data-action="set-day" data-value="${i}">${short}<br><span class="day-num">${dnum}</span></button>`;
+    }
+    s += `</div>`;
+    return s;
+  })();
+
+  const dayLabel = isDayView
+    ? new Date(start).toLocaleDateString(undefined, {
+        weekday: "long",
+        day: "2-digit",
+        month: "short",
+      })
+    : "";
+
   let html = `<div class="screen">
     <div class="week-nav">
       <button data-action="week-prev">&larr; Prev</button>
-      <div class="week-label">${getWeekLabel()}</div>
+      <div class="week-label">${getWeekLabel()}${isDayView ? ` — ${dayLabel}` : ""}</div>
       <button data-action="week-next" ${state.weekOffset >= 0 ? "disabled style='opacity:0.4'" : ""}>Next &rarr;</button>
     </div>
+    ${dayPillsHtml}
     <button class="pdf-btn" data-action="download-pdf">📄 Download weekly PDF report</button>
     <div class="summary">`;
 
@@ -1428,6 +1457,7 @@ function attachHandlers() {
       state.editingId = null;
       state.coupon = false;
       state.entryDate = null;
+      state.selectedDayOffset = null;
       render();
       if (state.tab === "stats" || state.tab === "checkin") syncNow();
     });
@@ -1679,13 +1709,19 @@ function handleAction(action, data) {
     }
     case "week-prev":
       state.weekOffset--;
+      state.selectedDayOffset = null;
       render();
       break;
     case "week-next":
       if (state.weekOffset < 0) {
         state.weekOffset++;
+        state.selectedDayOffset = null;
         render();
       }
+      break;
+    case "set-day":
+      state.selectedDayOffset = data.value === "" ? null : parseInt(data.value, 10);
+      render();
       break;
     case "delete-entry":
       if (confirm("Delete this entry?")) {

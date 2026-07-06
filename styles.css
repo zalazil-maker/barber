@@ -320,6 +320,27 @@ header h1 {
   gap: 6px;
   margin-bottom: 10px;
 }
+.day-pills {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 4px;
+  scrollbar-width: none;
+}
+.day-pills::-webkit-scrollbar { display: none; }
+.day-pills .pill {
+  flex: 0 0 auto;
+  min-width: 46px;
+  padding: 6px 8px;
+  line-height: 1.15;
+  text-align: center;
+}
+.day-pills .day-num {
+  display: inline-block;
+  font-size: 11px;
+  color: #94a3b8;
+  font-weight: 500;
+}
+.day-pills .pill.active .day-num { color: #dbeafe; }
 .pill {
   flex: 1;
   padding: 8px 6px;
