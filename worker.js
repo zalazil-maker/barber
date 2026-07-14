@@ -79,7 +79,7 @@ export default {
     try {
       if (request.method === "GET") {
         const out = await q(
-          "select id, type, barber, amount, method, ts, deleted_at, coupon, created_at from events order by ts desc limit 5000"
+          "select id, type, barber, amount, method, ts, deleted_at, coupon, rdv, created_at from events order by ts desc limit 5000"
         );
         return json(out.rows || []);
       }
@@ -90,8 +90,8 @@ export default {
         if (body.op === "insert") {
           const r = body.row || {};
           await q(
-            "insert into events (id, type, barber, amount, method, ts, coupon) " +
-              "values ($1,$2,$3,$4,$5,$6,$7) on conflict (id) do nothing",
+            "insert into events (id, type, barber, amount, method, ts, coupon, rdv) " +
+              "values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (id) do nothing",
             [
               r.id,
               r.type,
@@ -100,6 +100,7 @@ export default {
               r.method ?? null,
               r.ts,
               r.coupon === true,
+              r.rdv === true,
             ]
           );
           return json({ ok: true });
@@ -117,6 +118,10 @@ export default {
           if (p.coupon !== undefined) {
             sets.push("coupon=$" + i++);
             vals.push(p.coupon === true);
+          }
+          if (p.rdv !== undefined) {
+            sets.push("rdv=$" + i++);
+            vals.push(p.rdv === true);
           }
           vals.push(body.id);
           await q(

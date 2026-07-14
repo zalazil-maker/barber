@@ -27,6 +27,7 @@ const state = {
   selectedDayOffset: null, // null = whole week; 0..6 = single day within current week
   editingId: null,
   coupon: false,
+  rdv: false,
   entryDate: null, // YYYY-MM-DD; null = today
   analytics: { period: "week", scope: "all", offset: 0 },
   sync: "idle", // idle | syncing | offline
@@ -68,6 +69,7 @@ function rebuildData() {
         amount: e.amount,
         method: e.method,
         coupon: !!e.coupon,
+        rdv: !!e.rdv,
         time,
         createdAt: e.created_at || null,
         deletedAt: e.deleted_at,
@@ -81,6 +83,7 @@ function rebuildData() {
         amount: e.amount,
         method: e.method,
         coupon: !!e.coupon,
+        rdv: !!e.rdv,
         time,
         createdAt: e.created_at || null,
       });
@@ -163,6 +166,7 @@ async function fetchAll() {
     ts: Number(r.ts),
     deleted_at: r.deleted_at || null,
     coupon: r.coupon === true || r.coupon === "t" || r.coupon === "true",
+    rdv: r.rdv === true || r.rdv === "t" || r.rdv === "true",
     created_at: r.created_at || null,
   }));
   saveCache();
@@ -361,6 +365,7 @@ function buildWeeklyReport() {
       cash: sum(cash(bE), (e) => e.amount),
       card: sum(card(bE), (e) => e.amount),
       coupons: bE.filter((e) => e.coupon).length,
+      rdvs: bE.filter((e) => e.rdv).length,
       acomptes: acompteTotal,
       shareGross,
       shareNet: shareGross - acompteTotal,
@@ -488,7 +493,8 @@ function generateWeeklyPDF() {
       ["    Cash", money(s.cash)],
       ["    Card", money(s.card)],
       ["Products sold (100% to house)", `${s.productCount}  (${money(s.products)})`],
-      ["Coupons used", `${s.coupons}`],
+      ["Coupons (−20%) used", `${s.coupons}`],
+      ["RDV (−10%) used", `${s.rdvs}`],
       ["Acomptes (advances) taken", `- ${money(s.acomptes)}`],
     ];
     for (const [k, v] of rows) {
@@ -700,9 +706,11 @@ function renderRegister() {
     const editing = state.editingId ? " (editing)" : "";
     const isEdit = !!state.editingId;
     const raw = parseInt(state.amount || "0", 10);
-    const finalAmt = !isEdit && state.coupon ? Math.round(raw * 0.8) : raw;
+    const mult = state.coupon ? 0.8 : state.rdv ? 0.9 : 1;
+    const hasDiscount = state.coupon || state.rdv;
+    const finalAmt = !isEdit && hasDiscount ? Math.round(raw * mult) : raw;
     const amountInner =
-      !isEdit && state.coupon && raw > 0
+      !isEdit && hasDiscount && raw > 0
         ? `<span class="struck">${raw}</span> ${finalAmt}<span class="currency">€</span>`
         : `${state.amount ? state.amount : "0"}<span class="currency">€</span>`;
     const curDate = state.entryDate || todayISO();
@@ -715,9 +723,14 @@ function renderRegister() {
         <input id="entry-date-input" class="date-input" type="date" value="${curDate}" max="${todayISO()}" min="${isoDaysAgo(60)}">
       </div>`}
       <div class="amount-display ${empty}">${amountInner}</div>
-      <button class="coupon-btn ${state.coupon ? "on" : ""}" data-action="toggle-coupon">
-        ${state.coupon ? "✓ Coupon −20% applied" : "Coupon −20%"}
-      </button>
+      <div class="discount-row">
+        <button class="coupon-btn ${state.coupon ? "on" : ""}" data-action="toggle-coupon">
+          ${state.coupon ? "✓ Coupon −20%" : "Coupon −20%"}
+        </button>
+        <button class="rdv-btn ${state.rdv ? "on" : ""}" data-action="toggle-rdv">
+          ${state.rdv ? "✓ RDV −10%" : "RDV −10%"}
+        </button>
+      </div>
       <div class="keypad">
         ${[1,2,3,4,5,6,7,8,9].map(n => `<button class="key" data-action="key" data-key="${n}">${n}</button>`).join("")}
         <button class="key del" data-action="key" data-key="del">⌫</button>
@@ -731,8 +744,10 @@ function renderRegister() {
     const editing = state.editingId ? " (editing)" : "";
     const isEdit = !!state.editingId;
     const raw = parseInt(state.amount || "0", 10);
-    const finalAmt = !isEdit && state.coupon ? Math.round(raw * 0.8) : raw;
-    const couponNote = state.coupon ? ` (coupon −20%)` : "";
+    const mult = state.coupon ? 0.8 : state.rdv ? 0.9 : 1;
+    const hasDiscount = state.coupon || state.rdv;
+    const finalAmt = !isEdit && hasDiscount ? Math.round(raw * mult) : raw;
+    const couponNote = state.coupon ? ` (coupon −20%)` : state.rdv ? ` (RDV −10%)` : "";
     return `<div class="screen">
       <button class="back-btn" data-action="back-amount">&larr; Back</button>
       <h2>${state.selectedBarber} — ${finalAmt}€${couponNote} — Payment?${editing}</h2>
@@ -800,13 +815,14 @@ function renderStats() {
   const displayBarbers = barbersForRange(week.start, week.end);
   const stats = {};
   for (const b of displayBarbers) {
-    stats[b] = { count: 0, esp: 0, cb: 0, total: 0, coupons: 0, acomptes: 0, products: 0 };
+    stats[b] = { count: 0, esp: 0, cb: 0, total: 0, coupons: 0, rdvs: 0, acomptes: 0, products: 0 };
   }
   for (const e of weekEntries) {
     if (!stats[e.barber]) continue;
     stats[e.barber].count++;
     stats[e.barber].total += e.amount;
     if (e.coupon) stats[e.barber].coupons++;
+    if (e.rdv) stats[e.barber].rdvs++;
     if (e.method === "ESP") stats[e.barber].esp += e.amount;
     else stats[e.barber].cb += e.amount;
   }
@@ -858,7 +874,8 @@ function renderStats() {
       <div class="row"><span class="label">Customers</span><span class="value">${s.count}</span></div>
       <div class="row"><span class="label">Cash (ESP)</span><span class="value">${s.esp}€</span></div>
       <div class="row"><span class="label">Card (CB)</span><span class="value">${s.cb}€</span></div>
-      <div class="row"><span class="label">Coupons</span><span class="value">${s.coupons}</span></div>
+      <div class="row"><span class="label">Coupons (−20%)</span><span class="value">${s.coupons}</span></div>
+      <div class="row"><span class="label">RDV (−10%)</span><span class="value rdv-val">${s.rdvs}</span></div>
       <div class="row total"><span class="label">Haircut total</span><span class="value">${s.total}€</span></div>
       <div class="row"><span class="label">Products (house)</span><span class="value product-val">+${s.products}€</span></div>
       <div class="row"><span class="label">Acomptes</span><span class="value acompte-val">-${s.acomptes}€</span></div>
@@ -937,6 +954,7 @@ function renderStats() {
           <div>
             <span class="amt">${e.amount}€</span>
             ${e.coupon ? `<span class="coupon-tag">−20%</span>` : ""}
+            ${e.rdv ? `<span class="rdv-tag">RDV −10%</span>` : ""}
             <span class="pay ${e.method}">${e.method}</span>
             <button class="edit-btn" data-action="edit-entry" data-id="${e.id}" title="Edit">✎</button>
             <button class="del-btn" data-action="delete-entry" data-id="${e.id}" title="Delete">×</button>
@@ -971,7 +989,7 @@ function renderStats() {
         e.type === "entry" && e.method
           ? `<span class="pay ${e.method}">${e.method}</span>`
           : "";
-      const cpn = e.coupon ? `<span class="coupon-tag">−20%</span>` : "";
+      const cpn = e.coupon ? `<span class="coupon-tag">−20%</span>` : e.rdv ? `<span class="rdv-tag">RDV −10%</span>` : "";
       const delTs = new Date(e.deletedAt).getTime();
       html += `<div class="entry deleted-entry">
         <div>
@@ -1100,6 +1118,7 @@ function computeBucket(start, end, barberFilter) {
   const cashTotal = cash.reduce((s, e) => s + e.amount, 0);
   const cardTotal = card.reduce((s, e) => s + e.amount, 0);
   const coupons = entries.filter((e) => e.coupon).length;
+  const rdvs = entries.filter((e) => e.rdv).length;
   const acompteTotal = acomptes.reduce((s, e) => s + e.amount, 0);
   const dayKeys = new Set(
     [...entries, ...products].map((e) => todayKey(e.time))
@@ -1113,6 +1132,7 @@ function computeBucket(start, end, barberFilter) {
     cash: cashTotal,
     card: cardTotal,
     coupons,
+    rdvs,
     acomptes: acompteTotal,
     avgPerCustomer: entries.length ? haircutRevenue / entries.length : 0,
     activeDays: dayKeys.size,
@@ -1373,6 +1393,7 @@ function renderAnalytics() {
       </div>` : `<p>No haircuts logged yet.</p>`}
     ${cur.products > 0 ? `<p>Products: <b>${fmtEuroInt(cur.products)}</b> from ${cur.productCount} sale${cur.productCount === 1 ? "" : "s"} (<b>${((cur.products / Math.max(cur.revenue, 1)) * 100).toFixed(0)}%</b> of revenue).</p>` : ""}
     ${cur.customers > 0 ? `<p>Coupons: <b>${cur.coupons}</b>/${cur.customers} customers (<b>${couponRate.toFixed(0)}%</b>) used the -20% discount.</p>` : ""}
+    ${cur.rdvs > 0 ? `<p>RDV promo: <b>${cur.rdvs}</b>/${cur.customers} customers (<b>${((cur.rdvs / cur.customers) * 100).toFixed(0)}%</b>) used the -10% RDV discount.</p>` : ""}
     ${scope === "all" ? `<p>Expenses: <b>-${fmtEuroInt(expensesTotal)}</b>. House net (50% haircuts + 100% products − expenses): <b>${fmtEuroInt(cur.haircutRevenue * 0.5 + cur.products - expensesTotal)}</b>.</p>` : `<p>Acomptes already taken: <b>-${fmtEuroInt(cur.acomptes)}</b>. Pending share (50% of haircuts): <b>${fmtEuroInt(cur.haircutRevenue * 0.5 - cur.acomptes)}</b>.</p>`}
   </div>`;
 
@@ -1456,6 +1477,7 @@ function attachHandlers() {
       state.amount = "";
       state.editingId = null;
       state.coupon = false;
+      state.rdv = false;
       state.entryDate = null;
       state.selectedDayOffset = null;
       render();
@@ -1509,11 +1531,18 @@ function handleAction(action, data) {
       state.amount = "";
       state.coupon = false;
       state.entryDate = null;
+      state.rdv = false;
       state.view = "amount";
       render();
       break;
     case "toggle-coupon":
       state.coupon = !state.coupon;
+      if (state.coupon) state.rdv = false;
+      render();
+      break;
+    case "toggle-rdv":
+      state.rdv = !state.rdv;
+      if (state.rdv) state.coupon = false;
       render();
       break;
     case "start-expense":
@@ -1640,6 +1669,7 @@ function handleAction(action, data) {
       state.amount = "";
       state.coupon = false;
       state.entryDate = null;
+      state.rdv = false;
       render();
       break;
     case "back-amount":
@@ -1668,12 +1698,15 @@ function handleAction(action, data) {
           amount: rawAmt,
           method: data.method,
           coupon: state.coupon,
+          rdv: state.rdv,
         });
         showToast(`Updated: ${rawAmt}€ ${data.method}`);
         state.editingId = null;
         state.tab = "stats";
       } else {
-        const finalAmt = state.coupon ? Math.round(rawAmt * 0.8) : rawAmt;
+        const mult = state.coupon ? 0.8 : state.rdv ? 0.9 : 1;
+        const hasDiscount = state.coupon || state.rdv;
+        const finalAmt = hasDiscount ? Math.round(rawAmt * mult) : rawAmt;
         const ts = tsFromEntryDate();
         localInsert({
           id: newId(),
@@ -1683,17 +1716,20 @@ function handleAction(action, data) {
           method: data.method,
           ts,
           coupon: state.coupon,
+          rdv: state.rdv,
         });
+        const tag = state.coupon ? " (−20%)" : state.rdv ? " (RDV −10%)" : "";
         showToast(
-          `Saved: ${state.selectedBarber} ${finalAmt}€ ${data.method}${
-            state.coupon ? " (−20%)" : ""
-          }${state.entryDate ? " (backdated)" : ""}`
+          `Saved: ${state.selectedBarber} ${finalAmt}€ ${data.method}${tag}${
+            state.entryDate ? " (backdated)" : ""
+          }`
         );
       }
       state.view = "home";
       state.selectedBarber = null;
       state.amount = "";
       state.coupon = false;
+      state.rdv = false;
       state.entryDate = null;
       render();
       syncNow();
@@ -1769,6 +1805,7 @@ function handleAction(action, data) {
       state.selectedBarber = entry.barber;
       state.amount = String(entry.amount);
       state.coupon = !!entry.coupon;
+      state.rdv = !!entry.rdv;
       state.tab = "register";
       state.view = "amount";
       render();
