@@ -30,6 +30,7 @@ const state = {
   rdv: false,
   entryDate: null, // YYYY-MM-DD; null = today
   analytics: { period: "week", scope: "all", offset: 0 },
+  caisse: { barber: null, dayOffset: 0, mode: "esp" },
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
   pending: loadPending(),
@@ -580,13 +581,13 @@ function render() {
 
   html += `<div class="tabs">
     <button class="tab ${state.tab === "register" ? "active" : ""}" data-tab="register">Register</button>
-    <button class="tab ${state.tab === "checkin" ? "active" : ""}" data-tab="checkin">Check-In</button>
+    <button class="tab ${state.tab === "caisse" ? "active" : ""}" data-tab="caisse">Caisse</button>
     <button class="tab ${state.tab === "stats" ? "active" : ""}" data-tab="stats">Stats</button>
     <button class="tab ${state.tab === "analytics" ? "active" : ""}" data-tab="analytics">Analytics</button>
   </div>`;
 
   if (state.tab === "register") html += renderRegister();
-  else if (state.tab === "checkin") html += renderCheckin();
+  else if (state.tab === "caisse") html += renderCaisse();
   else if (state.tab === "stats") html += renderStats();
   else if (state.tab === "analytics") html += renderAnalytics();
 
@@ -796,6 +797,213 @@ function renderCheckin() {
 
   html += `</div>`;
   return html;
+}
+
+// ---- Caisse (daily cash-drawer reconciliation) ----
+const DENOMS = [50, 20, 10, 5];
+
+function caisseDayISO(offset) {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${dd}`;
+}
+function caisseDayMs(offset) {
+  const d = new Date();
+  d.setDate(d.getDate() + offset);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+function caisseBillsKey(b, iso) { return `caisse_bills_${b}_${iso}`; }
+function caisseTickedKey(b, iso) { return `caisse_ticked_${b}_${iso}`; }
+function caisseLoadBills(b, iso) {
+  try { const r = localStorage.getItem(caisseBillsKey(b, iso)); if (r) return JSON.parse(r); } catch (e) {}
+  const o = {}; for (const d of DENOMS) o[d] = 0; return o;
+}
+function caisseSaveBills(b, iso, bills) { localStorage.setItem(caisseBillsKey(b, iso), JSON.stringify(bills)); }
+function caisseLoadTicked(b, iso) {
+  try { const r = localStorage.getItem(caisseTickedKey(b, iso)); if (r) return JSON.parse(r); } catch (e) {}
+  return [];
+}
+function caisseSaveTicked(b, iso, ids) { localStorage.setItem(caisseTickedKey(b, iso), JSON.stringify(ids)); }
+
+function renderCaisse() {
+  const { barber, dayOffset, mode } = state.caisse;
+  const iso = caisseDayISO(dayOffset);
+  const dayMs = caisseDayMs(dayOffset);
+  const dayEnd = dayMs + 86400000;
+  const dayLabel = new Date(dayMs).toLocaleDateString(undefined, {
+    weekday: "long", day: "2-digit", month: "short",
+  });
+  const dayHeading = dayOffset === 0 ? "Today" : dayOffset === -1 ? "Yesterday" : dayLabel;
+
+  let html = `<div class="screen">
+    <div class="week-nav">
+      <button data-action="caisse-day-prev">&larr; Prev</button>
+      <div class="week-label">${dayHeading}${dayOffset === 0 ? ` — ${dayLabel}` : ""}</div>
+      <button data-action="caisse-day-next" ${dayOffset >= 0 ? "disabled style='opacity:0.4'" : ""}>Next &rarr;</button>
+    </div>
+    <div class="pills">`;
+  for (const b of BARBERS) {
+    html += `<button class="pill ${barber === b ? "active" : ""}" data-action="caisse-barber" data-value="${b}">${b}</button>`;
+  }
+  html += `</div>`;
+
+  if (!barber) {
+    html += `<div class="insight-card"><p>Pick a barber to open their caisse for this day.</p></div></div>`;
+    return html;
+  }
+
+  const dayEntries = state.data.entries.filter(
+    (e) => e.time >= dayMs && e.time < dayEnd && e.barber === barber
+  );
+  const espEntries = dayEntries.filter((e) => e.method === "ESP");
+  const cbEntries = dayEntries.filter((e) => e.method === "CB");
+  const espTotal = espEntries.reduce((s, e) => s + e.amount, 0);
+  const cbTotal = cbEntries.reduce((s, e) => s + e.amount, 0);
+
+  html += `<div class="stat-card" style="margin-bottom:12px">
+    <h3>${barber} — ${dayHeading}</h3>
+    <div class="row"><span class="label">Cash (ESP)</span><span class="value">${espTotal}€ · ${espEntries.length}</span></div>
+    <div class="row"><span class="label">Card (CB)</span><span class="value">${cbTotal}€ · ${cbEntries.length}</span></div>
+    <div class="row total"><span class="label">Total du jour</span><span class="value">${espTotal + cbTotal}€</span></div>
+  </div>`;
+
+  html += `<div class="pills">
+    <button class="pill ${mode === "esp" ? "active" : ""}" data-action="caisse-mode" data-value="esp">Cash (ESP)</button>
+    <button class="pill ${mode === "cb" ? "active" : ""}" data-action="caisse-mode" data-value="cb">Card (CB)</button>
+  </div>`;
+
+  if (mode === "esp") {
+    const bills = caisseLoadBills(barber, iso);
+    const counted = DENOMS.reduce((s, d) => s + (bills[d] || 0) * d, 0);
+    const diff = counted - espTotal;
+    html += `<div class="stat-card">
+      <h3>Count your bills</h3>
+      <div class="bills-grid">`;
+    for (const d of DENOMS) {
+      html += `<div class="bill-row">
+        <div class="bill-denom">${d}€</div>
+        <div class="bill-x">×</div>
+        <input class="bill-input" type="number" inputmode="numeric" min="0" data-denom="${d}" value="${bills[d] || 0}">
+        <div class="bill-eq">=</div>
+        <div class="bill-sub" data-denom-sub="${d}">${(bills[d] || 0) * d}€</div>
+      </div>`;
+    }
+    html += `</div>
+      <div class="row total"><span class="label">Counted</span><span class="value" id="caisse-counted">${counted}€</span></div>
+      <div class="row"><span class="label">Expected (ESP)</span><span class="value">${espTotal}€</span></div>
+      <div id="caisse-diff" class="caisse-diff ${diff === 0 && espTotal > 0 ? "match" : diff > 0 ? "over" : diff < 0 ? "under" : ""}">
+        ${caisseDiffText(diff, espTotal)}
+      </div>
+    </div>`;
+  } else {
+    const tickedList = caisseLoadTicked(barber, iso);
+    const ticked = new Set(tickedList);
+    const tickedTotal = cbEntries.filter((e) => ticked.has(e.id)).reduce((s, e) => s + e.amount, 0);
+    const untickedCount = cbEntries.filter((e) => !ticked.has(e.id)).length;
+    html += `<div class="stat-card">
+      <h3>Tick each CB ticket you have</h3>
+      <div class="cb-list">`;
+    if (cbEntries.length === 0) {
+      html += `<div style="text-align:center;color:#94a3b8;padding:12px">No CB transactions on this day.</div>`;
+    } else {
+      const sorted = [...cbEntries].sort((a, b) => a.time - b.time);
+      for (const e of sorted) {
+        const isTick = ticked.has(e.id);
+        html += `<label class="cb-item ${isTick ? "ticked" : ""}">
+          <input type="checkbox" class="cb-tick" data-id="${e.id}" ${isTick ? "checked" : ""}>
+          <span class="cb-time">${formatTime(e.time)}</span>
+          <span class="cb-amt">${e.amount}€</span>
+          ${e.coupon ? `<span class="coupon-tag">−20%</span>` : ""}
+          ${e.rdv ? `<span class="rdv-tag">RDV −10%</span>` : ""}
+        </label>`;
+      }
+    }
+    html += `</div>
+      <div class="row total"><span class="label">Ticked</span><span class="value" id="caisse-counted">${tickedTotal}€ / ${cbTotal}€</span></div>
+      <div id="caisse-diff" class="caisse-diff ${tickedTotal === cbTotal && cbTotal > 0 ? "match" : untickedCount > 0 ? "under" : ""}">
+        ${cbEntries.length === 0 ? "" : tickedTotal === cbTotal ? "✓ All CB tickets matched" : `${untickedCount} ticket${untickedCount === 1 ? "" : "s"} still unticked`}
+      </div>
+    </div>`;
+  }
+
+  html += `</div>`;
+  return html;
+}
+
+function caisseDiffText(diff, expected) {
+  if (expected === 0 && diff === 0) return "Nothing to reconcile yet.";
+  if (diff === 0) return "✓ Matches expected cash";
+  if (diff > 0) return `⚠ +${diff}€ extra — either an unrecorded haircut or an over-count.`;
+  return `⚠ ${diff}€ missing — recount, or a haircut may be misclassified as CB.`;
+}
+
+function attachCaisseInputs() {
+  const barber = state.caisse.barber;
+  if (!barber) return;
+  const iso = caisseDayISO(state.caisse.dayOffset);
+  const dayMs = caisseDayMs(state.caisse.dayOffset);
+  const dayEnd = dayMs + 86400000;
+
+  document.querySelectorAll(".bill-input").forEach((inp) => {
+    inp.addEventListener("input", () => {
+      const d = parseInt(inp.dataset.denom, 10);
+      const count = Math.max(0, parseInt(inp.value || "0", 10) || 0);
+      const bills = caisseLoadBills(barber, iso);
+      bills[d] = count;
+      caisseSaveBills(barber, iso, bills);
+      const subEl = document.querySelector(`[data-denom-sub="${d}"]`);
+      if (subEl) subEl.textContent = `${count * d}€`;
+      caisseUpdateTotals("esp", barber, iso, dayMs, dayEnd);
+    });
+  });
+  document.querySelectorAll(".cb-tick").forEach((cb) => {
+    cb.addEventListener("change", () => {
+      const id = cb.dataset.id;
+      let ticked = caisseLoadTicked(barber, iso);
+      if (cb.checked) ticked = Array.from(new Set([...ticked, id]));
+      else ticked = ticked.filter((x) => x !== id);
+      caisseSaveTicked(barber, iso, ticked);
+      cb.closest(".cb-item").classList.toggle("ticked", cb.checked);
+      caisseUpdateTotals("cb", barber, iso, dayMs, dayEnd);
+    });
+  });
+}
+
+function caisseUpdateTotals(mode, barber, iso, dayMs, dayEnd) {
+  const dayEntries = state.data.entries.filter(
+    (e) => e.time >= dayMs && e.time < dayEnd && e.barber === barber
+  );
+  const countedEl = document.getElementById("caisse-counted");
+  const diffEl = document.getElementById("caisse-diff");
+  if (mode === "esp") {
+    const bills = caisseLoadBills(barber, iso);
+    const counted = DENOMS.reduce((s, d) => s + (bills[d] || 0) * d, 0);
+    const expected = dayEntries.filter((e) => e.method === "ESP").reduce((s, e) => s + e.amount, 0);
+    const diff = counted - expected;
+    if (countedEl) countedEl.textContent = `${counted}€`;
+    if (diffEl) {
+      diffEl.className = "caisse-diff " + (diff === 0 && expected > 0 ? "match" : diff > 0 ? "over" : diff < 0 ? "under" : "");
+      diffEl.textContent = caisseDiffText(diff, expected);
+    }
+  } else {
+    const cbEntries = dayEntries.filter((e) => e.method === "CB");
+    const cbTotal = cbEntries.reduce((s, e) => s + e.amount, 0);
+    const ticked = new Set(caisseLoadTicked(barber, iso));
+    const tickedTotal = cbEntries.filter((e) => ticked.has(e.id)).reduce((s, e) => s + e.amount, 0);
+    const untickedCount = cbEntries.filter((e) => !ticked.has(e.id)).length;
+    if (countedEl) countedEl.textContent = `${tickedTotal}€ / ${cbTotal}€`;
+    if (diffEl) {
+      diffEl.className = "caisse-diff " + (tickedTotal === cbTotal && cbTotal > 0 ? "match" : untickedCount > 0 ? "under" : "");
+      diffEl.textContent =
+        cbEntries.length === 0 ? "" :
+        tickedTotal === cbTotal ? "✓ All CB tickets matched" :
+        `${untickedCount} ticket${untickedCount === 1 ? "" : "s"} still unticked`;
+    }
+  }
 }
 
 function renderStats() {
@@ -1481,7 +1689,7 @@ function attachHandlers() {
       state.entryDate = null;
       state.selectedDayOffset = null;
       render();
-      if (state.tab === "stats" || state.tab === "checkin") syncNow();
+      if (state.tab === "stats" || state.tab === "caisse") syncNow();
     });
   });
 
@@ -1497,6 +1705,8 @@ function attachHandlers() {
       render();
     });
   }
+
+  if (state.tab === "caisse") attachCaisseInputs();
 }
 
 function handleAction(action, data) {
@@ -1757,6 +1967,24 @@ function handleAction(action, data) {
       break;
     case "set-day":
       state.selectedDayOffset = data.value === "" ? null : parseInt(data.value, 10);
+      render();
+      break;
+    case "caisse-barber":
+      state.caisse.barber = data.value;
+      render();
+      break;
+    case "caisse-day-prev":
+      state.caisse.dayOffset--;
+      render();
+      break;
+    case "caisse-day-next":
+      if (state.caisse.dayOffset < 0) {
+        state.caisse.dayOffset++;
+        render();
+      }
+      break;
+    case "caisse-mode":
+      state.caisse.mode = data.value;
       render();
       break;
     case "delete-entry":

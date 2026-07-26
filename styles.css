@@ -316,6 +316,81 @@ header h1 {
   color: #fbbf24;
   margin-top: 2px;
 }
+.bills-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.bill-row {
+  display: grid;
+  grid-template-columns: 60px 20px 1fr 20px 90px;
+  align-items: center;
+  gap: 6px;
+  background: #0f172a;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+.bill-denom { font-weight: 700; font-size: 18px; color: #f8fafc; }
+.bill-x, .bill-eq { color: #64748b; text-align: center; }
+.bill-input {
+  background: #1e293b;
+  color: #f8fafc;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 18px;
+  text-align: center;
+  width: 100%;
+  font-weight: 600;
+}
+.bill-sub {
+  text-align: right;
+  font-weight: 600;
+  color: #cbd5e1;
+  font-size: 16px;
+}
+.caisse-diff {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 10px;
+  font-weight: 600;
+  text-align: center;
+}
+.caisse-diff.match { background: rgba(34, 197, 94, 0.15); color: #86efac; border: 1px solid #22c55e; }
+.caisse-diff.over  { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid #f59e0b; }
+.caisse-diff.under { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid #ef4444; }
+.cb-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 12px;
+  max-height: 380px;
+  overflow-y: auto;
+}
+.cb-item {
+  display: grid;
+  grid-template-columns: 24px 60px 1fr auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  background: #0f172a;
+  border-radius: 8px;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+}
+.cb-item.ticked {
+  background: rgba(34, 197, 94, 0.1);
+  border-left-color: #22c55e;
+}
+.cb-item input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  accent-color: #22c55e;
+}
+.cb-time { color: #94a3b8; font-size: 13px; }
+.cb-amt { font-weight: 600; font-size: 15px; color: #f8fafc; }
+
 #install-btn {
   position: fixed;
   bottom: 16px;
