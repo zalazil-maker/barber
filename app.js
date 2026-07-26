@@ -864,11 +864,37 @@ function renderCaisse() {
   const espTotal = espEntries.reduce((s, e) => s + e.amount, 0);
   const cbTotal = cbEntries.reduce((s, e) => s + e.amount, 0);
 
+  // Compute already-counted totals so the header can show reconciliation progress live
+  const billsNow = caisseLoadBills(barber, iso);
+  const countedNow = DENOMS.reduce((s, d) => s + (billsNow[d] || 0) * d, 0);
+  const tickedSetNow = new Set(caisseLoadTicked(barber, iso));
+  const tickedNow = cbEntries.filter((e) => tickedSetNow.has(e.id)).reduce((s, e) => s + e.amount, 0);
+  const dayTotal = espTotal + cbTotal;
+  const reconciledNow = countedNow + tickedNow;
+  const dayMatched = countedNow === espTotal && tickedNow === cbTotal && dayTotal > 0;
+
+  const espStatusHtml = (c) =>
+    c === espTotal && espTotal > 0
+      ? `<span class="mini-status match">✓ ${c}€</span>`
+      : c > espTotal
+      ? `<span class="mini-status over">+${c - espTotal}€ over (${c}€)</span>`
+      : c < espTotal
+      ? `<span class="mini-status under">${c}€ / ${espTotal}€</span>`
+      : `<span class="mini-status">${c}€ / ${espTotal}€</span>`;
+  const cbStatusHtml = (t) =>
+    t === cbTotal && cbTotal > 0
+      ? `<span class="mini-status match">✓ ${t}€</span>`
+      : `<span class="mini-status ${t > 0 ? "under" : ""}">${t}€ / ${cbTotal}€</span>`;
+
   html += `<div class="stat-card" style="margin-bottom:12px">
     <h3>${barber} — ${dayHeading}</h3>
-    <div class="row"><span class="label">Cash (ESP)</span><span class="value">${espTotal}€ · ${espEntries.length}</span></div>
-    <div class="row"><span class="label">Card (CB)</span><span class="value">${cbTotal}€ · ${cbEntries.length}</span></div>
-    <div class="row total"><span class="label">Total du jour</span><span class="value">${espTotal + cbTotal}€</span></div>
+    <div class="row"><span class="label">Cash (ESP) · ${espEntries.length}</span><span class="value" id="hdr-esp">${espStatusHtml(countedNow)}</span></div>
+    <div class="row"><span class="label">Card (CB) · ${cbEntries.length}</span><span class="value" id="hdr-cb">${cbStatusHtml(tickedNow)}</span></div>
+    <div class="row total"><span class="label">Day total (from Stats)</span><span class="value">${dayTotal}€</span></div>
+    <div class="row"><span class="label">Reconciled so far</span><span class="value" id="hdr-recon">${reconciledNow}€ / ${dayTotal}€</span></div>
+    <div class="caisse-diff ${dayMatched ? "match" : ""}" id="hdr-day-status" style="margin-top:10px">
+      ${dayTotal === 0 ? "No haircuts recorded on this day yet." : dayMatched ? "✓ Day fully reconciled — caisse matches Stats." : "Keep going — cash + card should add up to the day total."}
+    </div>
   </div>`;
 
   html += `<div class="pills">
@@ -977,23 +1003,58 @@ function caisseUpdateTotals(mode, barber, iso, dayMs, dayEnd) {
   const dayEntries = state.data.entries.filter(
     (e) => e.time >= dayMs && e.time < dayEnd && e.barber === barber
   );
+  const espTotal = dayEntries.filter((e) => e.method === "ESP").reduce((s, e) => s + e.amount, 0);
+  const cbEntries = dayEntries.filter((e) => e.method === "CB");
+  const cbTotal = cbEntries.reduce((s, e) => s + e.amount, 0);
+  const dayTotal = espTotal + cbTotal;
+  const bills = caisseLoadBills(barber, iso);
+  const counted = DENOMS.reduce((s, d) => s + (bills[d] || 0) * d, 0);
+  const ticked = new Set(caisseLoadTicked(barber, iso));
+  const tickedTotal = cbEntries.filter((e) => ticked.has(e.id)).reduce((s, e) => s + e.amount, 0);
+  const reconciled = counted + tickedTotal;
+  const dayMatched = counted === espTotal && tickedTotal === cbTotal && dayTotal > 0;
+
+  const hdrEsp = document.getElementById("hdr-esp");
+  const hdrCb = document.getElementById("hdr-cb");
+  const hdrRecon = document.getElementById("hdr-recon");
+  const hdrStatus = document.getElementById("hdr-day-status");
+  if (hdrEsp) {
+    hdrEsp.innerHTML =
+      counted === espTotal && espTotal > 0
+        ? `<span class="mini-status match">✓ ${counted}€</span>`
+        : counted > espTotal
+        ? `<span class="mini-status over">+${counted - espTotal}€ over (${counted}€)</span>`
+        : counted < espTotal
+        ? `<span class="mini-status under">${counted}€ / ${espTotal}€</span>`
+        : `<span class="mini-status">${counted}€ / ${espTotal}€</span>`;
+  }
+  if (hdrCb) {
+    hdrCb.innerHTML =
+      tickedTotal === cbTotal && cbTotal > 0
+        ? `<span class="mini-status match">✓ ${tickedTotal}€</span>`
+        : `<span class="mini-status ${tickedTotal > 0 ? "under" : ""}">${tickedTotal}€ / ${cbTotal}€</span>`;
+  }
+  if (hdrRecon) hdrRecon.textContent = `${reconciled}€ / ${dayTotal}€`;
+  if (hdrStatus) {
+    hdrStatus.className = "caisse-diff " + (dayMatched ? "match" : "");
+    hdrStatus.textContent =
+      dayTotal === 0
+        ? "No haircuts recorded on this day yet."
+        : dayMatched
+        ? "✓ Day fully reconciled — caisse matches Stats."
+        : "Keep going — cash + card should add up to the day total.";
+  }
+
   const countedEl = document.getElementById("caisse-counted");
   const diffEl = document.getElementById("caisse-diff");
   if (mode === "esp") {
-    const bills = caisseLoadBills(barber, iso);
-    const counted = DENOMS.reduce((s, d) => s + (bills[d] || 0) * d, 0);
-    const expected = dayEntries.filter((e) => e.method === "ESP").reduce((s, e) => s + e.amount, 0);
-    const diff = counted - expected;
+    const diff = counted - espTotal;
     if (countedEl) countedEl.textContent = `${counted}€`;
     if (diffEl) {
-      diffEl.className = "caisse-diff " + (diff === 0 && expected > 0 ? "match" : diff > 0 ? "over" : diff < 0 ? "under" : "");
-      diffEl.textContent = caisseDiffText(diff, expected);
+      diffEl.className = "caisse-diff " + (diff === 0 && espTotal > 0 ? "match" : diff > 0 ? "over" : diff < 0 ? "under" : "");
+      diffEl.textContent = caisseDiffText(diff, espTotal);
     }
   } else {
-    const cbEntries = dayEntries.filter((e) => e.method === "CB");
-    const cbTotal = cbEntries.reduce((s, e) => s + e.amount, 0);
-    const ticked = new Set(caisseLoadTicked(barber, iso));
-    const tickedTotal = cbEntries.filter((e) => ticked.has(e.id)).reduce((s, e) => s + e.amount, 0);
     const untickedCount = cbEntries.filter((e) => !ticked.has(e.id)).length;
     if (countedEl) countedEl.textContent = `${tickedTotal}€ / ${cbTotal}€`;
     if (diffEl) {

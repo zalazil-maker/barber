@@ -360,6 +360,17 @@ header h1 {
 .caisse-diff.match { background: rgba(34, 197, 94, 0.15); color: #86efac; border: 1px solid #22c55e; }
 .caisse-diff.over  { background: rgba(245, 158, 11, 0.15); color: #fbbf24; border: 1px solid #f59e0b; }
 .caisse-diff.under { background: rgba(239, 68, 68, 0.15); color: #fca5a5; border: 1px solid #ef4444; }
+.mini-status {
+  font-size: 13px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: #0f172a;
+  color: #cbd5e1;
+}
+.mini-status.match { background: rgba(34, 197, 94, 0.2); color: #86efac; }
+.mini-status.over  { background: rgba(245, 158, 11, 0.2); color: #fbbf24; }
+.mini-status.under { background: rgba(239, 68, 68, 0.18); color: #fca5a5; }
 .cb-list {
   display: flex;
   flex-direction: column;
