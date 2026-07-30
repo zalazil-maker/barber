@@ -54,6 +54,12 @@ const HOURS = {
 
 const SHOP_TZ = "Europe/Paris";
 
+// The `events` table predates the coupon/RDV promo columns. Older databases are
+// missing them, which makes the counter app's feed fail with
+// `column "rdv" does not exist`. Adding them is idempotent, and the flag keeps
+// it to one round trip per Worker isolate rather than one per request.
+let eventsColumnsReady = false;
+
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -292,6 +298,15 @@ export default {
            created_at timestamptz not null default now()
          )`
       );
+    }
+
+    // Brings an older `events` table up to date. Both statements are no-ops
+    // once the columns exist, and neither touches existing rows.
+    async function ensureEventsColumns() {
+      if (eventsColumnsReady) return;
+      await q("alter table events add column if not exists coupon boolean not null default false");
+      await q("alter table events add column if not exists rdv boolean not null default false");
+      eventsColumnsReady = true;
     }
 
     function requireAdmin(body) {
@@ -560,6 +575,7 @@ export default {
 
       // ── Counter-app events feed (unchanged) ────────────────────────────
       if (request.method === "GET") {
+        await ensureEventsColumns();
         const out = await q(
           "select id, type, barber, amount, method, ts, deleted_at, coupon, rdv, created_at from events order by ts desc limit 5000"
         );
@@ -568,6 +584,7 @@ export default {
 
       if (request.method === "POST") {
         const body = await request.json();
+        await ensureEventsColumns();
 
         if (body.op === "insert") {
           const r = body.row || {};
