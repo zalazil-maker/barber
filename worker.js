@@ -189,6 +189,97 @@ function validBooking(body) {
   };
 }
 
+// ── Web Push (optional) ─────────────────────────────────────────────────────
+// Sends a payload-less push: the notification body is fetched by the service
+// worker when it wakes. That deliberately avoids implementing RFC 8291 payload
+// encryption, which is where most hand-rolled push code goes wrong.
+function b64urlToBytes(s) {
+  s = String(s).replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  const bin = atob(s);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function bytesToB64url(bytes) {
+  let bin = "";
+  for (const b of new Uint8Array(bytes)) bin += String.fromCharCode(b);
+  return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function textToB64url(s) {
+  return bytesToB64url(new TextEncoder().encode(s));
+}
+
+// Builds the signed VAPID token that proves to the push service we are the
+// application server this subscription was created for.
+async function vapidAuth(env, audience) {
+  const pub = b64urlToBytes(env.VAPID_PUBLIC_KEY); // 65-byte uncompressed point
+  if (pub.length !== 65 || pub[0] !== 4) throw new Error("VAPID_PUBLIC_KEY malformed");
+
+  const jwk = {
+    kty: "EC",
+    crv: "P-256",
+    x: bytesToB64url(pub.slice(1, 33)),
+    y: bytesToB64url(pub.slice(33, 65)),
+    d: String(env.VAPID_PRIVATE_KEY).trim(),
+    ext: true,
+  };
+  const key = await crypto.subtle.importKey(
+    "jwk",
+    jwk,
+    { name: "ECDSA", namedCurve: "P-256" },
+    false,
+    ["sign"]
+  );
+
+  const header = textToB64url(JSON.stringify({ typ: "JWT", alg: "ES256" }));
+  const body = textToB64url(
+    JSON.stringify({
+      aud: audience,
+      exp: Math.floor(Date.now() / 1000) + 12 * 3600,
+      sub: env.VAPID_SUBJECT || "mailto:contact@luxurybarber.fr",
+    })
+  );
+  const signingInput = new TextEncoder().encode(header + "." + body);
+  const sig = await crypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" },
+    key,
+    signingInput
+  );
+  const jwt = header + "." + body + "." + bytesToB64url(sig);
+  return "vapid t=" + jwt + ", k=" + env.VAPID_PUBLIC_KEY;
+}
+
+// Pushes a wake-up to every registered device. Returns endpoints the push
+// service says are gone, so the caller can drop them.
+async function sendPushes(env, subscriptions) {
+  const dead = [];
+  if (!env.VAPID_PUBLIC_KEY || !env.VAPID_PRIVATE_KEY) return dead;
+
+  for (const sub of subscriptions) {
+    try {
+      const endpoint = String(sub.endpoint);
+      const audience = new URL(endpoint).origin;
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          Authorization: await vapidAuth(env, audience),
+          TTL: "3600",
+          Urgency: "high",
+          "Content-Length": "0",
+        },
+      });
+      // 404/410 mean the browser dropped the subscription for good.
+      if (res.status === 404 || res.status === 410) dead.push(endpoint);
+    } catch (e) {
+      // A push failure must never undo a booking that is already saved.
+    }
+  }
+  return dead;
+}
+
 // ── Email notification (optional) ───────────────────────────────────────────
 // Only fires when RESEND_API_KEY and SHOP_EMAIL are configured; a mail failure
 // must never lose a booking that is already committed to the database.
@@ -289,6 +380,13 @@ export default {
            on bookings (barber, slot_date, slot_min) where status = 'confirmed'`
       );
       await q(
+        `create table if not exists push_subscriptions (
+           endpoint text primary key,
+           label text,
+           created_at timestamptz not null default now()
+         )`
+      );
+      await q(
         `create table if not exists blocked_slots (
            id text primary key,
            barber text not null,
@@ -375,6 +473,59 @@ export default {
           return json({ date, closed: false, slotMinutes: SLOT_MIN, barbers: out });
         }
 
+        // The public VAPID key is safe to hand out — the app needs it to
+        // create a subscription.
+        if (path === "/api/push/key") {
+          return json({
+            publicKey: env.VAPID_PUBLIC_KEY || null,
+            enabled: !!(env.VAPID_PUBLIC_KEY && env.VAPID_PRIVATE_KEY),
+          });
+        }
+
+        if (path === "/api/push/subscribe") {
+          if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+          const body = await request.json();
+          const denied = requireAdmin(body);
+          if (denied) return json({ error: denied }, 401);
+
+          const sub = body.subscription || {};
+          if (!sub.endpoint || !/^https:\/\//.test(String(sub.endpoint))) {
+            return json({ error: "Abonnement invalide." }, 400);
+          }
+          await ensureSchema();
+          await q(
+            `insert into push_subscriptions (endpoint, label) values ($1,$2)
+             on conflict (endpoint) do update set label = excluded.label`,
+            [String(sub.endpoint), cleanText(body.label, 80) || null]
+          );
+          return json({ ok: true });
+        }
+
+        if (path === "/api/push/unsubscribe") {
+          if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+          const body = await request.json();
+          const denied = requireAdmin(body);
+          if (denied) return json({ error: denied }, 401);
+          await ensureSchema();
+          await q("delete from push_subscriptions where endpoint = $1", [
+            String(body.endpoint || ""),
+          ]);
+          return json({ ok: true });
+        }
+
+        // Lets a barber confirm notifications actually reach their phone.
+        if (path === "/api/push/test") {
+          if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+          const body = await request.json();
+          const denied = requireAdmin(body);
+          if (denied) return json({ error: denied }, 401);
+          await ensureSchema();
+          const subs = await q("select endpoint from push_subscriptions");
+          const dead = await sendPushes(env, subs.rows || []);
+          for (const e of dead) await q("delete from push_subscriptions where endpoint = $1", [e]);
+          return json({ ok: true, sent: (subs.rows || []).length - dead.length });
+        }
+
         if (path === "/api/book") {
           if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
           const body = await request.json();
@@ -444,6 +595,16 @@ export default {
             );
 
             if (Number(res.rowCount || 0) === 0) continue; // slot just taken
+
+            // Wake the barbers' phones. Done before the response so it isn't
+            // cut short, but any failure is swallowed — the booking is saved.
+            try {
+              const subs = await q("select endpoint from push_subscriptions");
+              const dead = await sendPushes(env, subs.rows || []);
+              for (const e of dead) {
+                await q("delete from push_subscriptions where endpoint = $1", [e]);
+              }
+            } catch (e) {}
 
             const when = `${v.date} à ${hhmm(v.slot)}`;
             await sendMail(env, env.SHOP_EMAIL, `Nouveau RDV — ${v.name} — ${when}`, [

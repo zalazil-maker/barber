@@ -17,6 +17,10 @@ function barberColorClass(name) {
 const WORKER_URL = "https://barbershop.ezalazil.workers.dev";
 const EVENTS_KEY = "barbershop_events_v1";
 const PENDING_KEY = "barbershop_pending_v1";
+// Must be declared before `state`, which calls loadAdminKey() while
+// initialising — a const declared later is still in the temporal dead zone,
+// and the ReferenceError would be swallowed by that function's try/catch.
+const ADMIN_KEY_STORE = "barbershop_admin_key_v1";
 
 const state = {
   view: "home",
@@ -39,14 +43,14 @@ const state = {
     loading: false,
     error: "",
     loadedFor: null,
+    push: "unknown", // unknown | on | off | denied | unsupported
+    pushBusy: false,
   },
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
   pending: loadPending(),
   data: { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [], products: [] },
 };
-
-const ADMIN_KEY_STORE = "barbershop_admin_key_v1";
 
 // The admin code is typed once per device and kept locally, so it never has to
 // live in this file (which is served publicly alongside the website).
@@ -61,6 +65,18 @@ function saveAdminKey(k) {
   try {
     localStorage.setItem(ADMIN_KEY_STORE, k);
   } catch (e) {}
+  shareAdminKeyWithSW(k);
+}
+
+// A service worker cannot read localStorage, but it needs the admin code to
+// fetch the booking details when a push arrives. The Cache API is readable
+// from both sides, so the key is mirrored there.
+function shareAdminKeyWithSW(k) {
+  if (!("caches" in self) || !k) return;
+  caches
+    .open("lb-cfg")
+    .then((c) => c.put("/__lb/admin-key", new Response(k)))
+    .catch(() => {});
 }
 
 // Booking details come from the public website, so they must never be dropped
@@ -860,6 +876,124 @@ async function loadRDV(force) {
   }
 }
 
+// ── Push notifications ─────────────────────────────────────────────────────
+function pushSupported() {
+  return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
+}
+
+async function refreshPushState() {
+  const t = state.rdvTab;
+  if (!pushSupported()) {
+    t.push = "unsupported";
+    return;
+  }
+  if (Notification.permission === "denied") {
+    t.push = "denied";
+    return;
+  }
+  try {
+    // serviceWorker.ready never settles when registration failed, so cap it
+    // rather than leaving the row stuck on "Un instant…".
+    const reg = await Promise.race([
+      navigator.serviceWorker.ready,
+      new Promise((_, rej) => setTimeout(() => rej(new Error("timeout")), 3000)),
+    ]);
+    const sub = await reg.pushManager.getSubscription();
+    t.push = sub ? "on" : "off";
+  } catch (e) {
+    t.push = "off";
+  }
+}
+
+async function enablePush() {
+  const t = state.rdvTab;
+  t.pushBusy = true;
+  t.error = "";
+  render();
+  try {
+    if (!pushSupported()) throw new Error("Ce navigateur ne gère pas les notifications.");
+
+    const info = await (await fetch(`${WORKER_URL}/api/push/key`)).json();
+    if (!info.enabled || !info.publicKey) {
+      throw new Error("Les notifications ne sont pas encore configurées sur le serveur.");
+    }
+
+    const perm = await Notification.requestPermission();
+    if (perm !== "granted") {
+      throw new Error(
+        "Notifications refusées. Autorisez-les dans les réglages du téléphone, puis réessayez."
+      );
+    }
+
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: b64urlToUint8(info.publicKey),
+      });
+    }
+
+    // The service worker needs the code to look up who booked.
+    shareAdminKeyWithSW(t.key);
+
+    const res = await fetch(`${WORKER_URL}/api/push/subscribe`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        key: t.key,
+        subscription: sub.toJSON(),
+        label: navigator.platform || "appareil",
+      }),
+    });
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || "Inscription impossible.");
+
+    t.push = "on";
+    showToast("Notifications activées");
+  } catch (err) {
+    t.error = String(err.message || err);
+    await refreshPushState();
+  } finally {
+    t.pushBusy = false;
+    render();
+  }
+}
+
+async function disablePush() {
+  const t = state.rdvTab;
+  t.pushBusy = true;
+  render();
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      await fetch(`${WORKER_URL}/api/push/unsubscribe`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: t.key, endpoint: sub.endpoint }),
+      }).catch(() => {});
+      await sub.unsubscribe();
+    }
+    t.push = "off";
+    showToast("Notifications désactivées");
+  } catch (err) {
+    t.error = String(err.message || err);
+  } finally {
+    t.pushBusy = false;
+    render();
+  }
+}
+
+function b64urlToUint8(s) {
+  const pad = "=".repeat((4 - (s.length % 4)) % 4);
+  const b64 = (s + pad).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  const out = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
 async function rdvAdmin(payload) {
   const res = await fetch(`${WORKER_URL}/api/admin`, {
     method: "POST",
@@ -869,6 +1003,29 @@ async function rdvAdmin(payload) {
   const j = await res.json();
   if (!res.ok) throw new Error(j.error || "Erreur " + res.status);
   return j;
+}
+
+function renderPushRow() {
+  const t = state.rdvTab;
+  let inner;
+
+  if (t.pushBusy) {
+    inner = `<span class="rdv-push-state">Un instant…</span>`;
+  } else if (t.push === "unsupported") {
+    inner = `<span class="rdv-push-state">Ajoutez l'app à l'écran d'accueil pour recevoir les notifications.</span>`;
+  } else if (t.push === "denied") {
+    inner = `<span class="rdv-push-state">Notifications bloquées — autorisez-les dans les réglages du téléphone.</span>`;
+  } else if (t.push === "on") {
+    inner = `<span class="rdv-push-state on">✓ Activées sur ce téléphone</span>
+      <button class="rdv-btn" data-action="rdv-push-test">Tester</button>
+      <button class="rdv-btn" data-action="rdv-push-off">Désactiver</button>`;
+  } else {
+    inner = `<span class="rdv-push-state">Soyez prévenu dès qu'un client réserve.</span>
+      <button class="rdv-btn primary" data-action="rdv-push-on">Activer</button>`;
+  }
+
+  return `<div class="rdv-section-title">Notifications</div>
+    <div class="rdv-pushrow">${inner}</div>`;
 }
 
 function renderRDV() {
@@ -976,6 +1133,7 @@ function renderRDV() {
     html += `<button class="rdv-btn" data-action="rdv-block-day" data-barber="ALL">Salon fermé</button>`;
     html += `</div>`;
 
+    html += renderPushRow();
     html += `<button class="rdv-btn wide" data-action="rdv-refresh">Rafraîchir</button>`;
   }
 
@@ -1968,7 +2126,10 @@ function attachHandlers() {
       state.selectedDayOffset = null;
       render();
       if (state.tab === "stats" || state.tab === "caisse") syncNow();
-      if (state.tab === "rdv") loadRDV(true);
+      if (state.tab === "rdv") {
+        loadRDV(true);
+        refreshPushState().then(render);
+      }
     });
   });
 
@@ -2010,6 +2171,22 @@ function handleAction(action, data) {
       loadRDV(true);
       break;
     }
+    case "rdv-push-on":
+      enablePush();
+      break;
+    case "rdv-push-off":
+      disablePush();
+      break;
+    case "rdv-push-test":
+      fetch(`${WORKER_URL}/api/push/test`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: state.rdvTab.key }),
+      })
+        .then((r) => r.json())
+        .then((j) => showToast(j.error ? j.error : `Notification envoyée (${j.sent})`))
+        .catch(() => showToast("Envoi impossible"));
+      break;
     case "rdv-prev":
       state.rdvTab.dayOffset--;
       loadRDV(true);
