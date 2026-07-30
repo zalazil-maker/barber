@@ -662,3 +662,136 @@ header h1 {
   font-size: 14px;
 }
 .week-nav .week-label { font-size: 14px; color: #cbd5e1; }
+
+/* ── RDV tab (online bookings) ── */
+.rdv-hint { color: #94a3b8; font-size: 14px; margin: 4px 0 16px; }
+
+.rdv-keyrow { display: flex; gap: 8px; }
+
+.rdv-key-input {
+  flex: 1;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 14px;
+  color: #f8fafc;
+  font-size: 16px;
+  user-select: text;
+}
+.rdv-key-input:focus { outline: none; border-color: #3b82f6; }
+
+.rdv-error {
+  background: #7f1d1d;
+  color: #fecaca;
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 14px;
+  margin-bottom: 12px;
+}
+
+.rdv-empty { color: #94a3b8; text-align: center; padding: 28px 0; font-size: 15px; }
+
+.rdv-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.rdv-nav {
+  background: #1e293b;
+  border: none;
+  color: #f8fafc;
+  font-size: 20px;
+  border-radius: 10px;
+  padding: 10px 16px;
+  cursor: pointer;
+}
+.rdv-nav:active { transform: scale(0.96); }
+
+.rdv-day { text-align: center; }
+.rdv-day-label { font-size: 17px; font-weight: 600; }
+.rdv-day-date { font-size: 12px; color: #94a3b8; }
+
+.rdv-summary {
+  background: #1e293b;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-size: 14px;
+  color: #cbd5e1;
+  text-align: center;
+  margin-bottom: 12px;
+}
+
+.rdv-list { display: flex; flex-direction: column; gap: 10px; }
+
+.rdv-card {
+  display: flex;
+  align-items: stretch;
+  gap: 12px;
+  background: #1e293b;
+  border-radius: 12px;
+  padding: 12px;
+}
+.rdv-card.cancelled { opacity: 0.5; }
+.rdv-card.blocked { background: #292524; }
+
+.rdv-time {
+  font-size: 17px;
+  font-weight: 700;
+  min-width: 52px;
+  display: flex;
+  align-items: center;
+  color: #f8fafc;
+}
+
+.rdv-body { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+
+.rdv-line1 { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.rdv-line2 { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+.rdv-barber {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 3px 9px;
+  border-radius: 999px;
+  color: #fff;
+}
+.rdv-barber.sami { background: #3b82f6; }
+.rdv-barber.amine { background: #ec4899; }
+
+.rdv-service { font-size: 14px; color: #cbd5e1; }
+.rdv-price { font-size: 14px; font-weight: 700; color: #4ade80; margin-left: auto; }
+.rdv-name { font-size: 15px; font-weight: 600; }
+.rdv-phone { font-size: 14px; color: #60a5fa; text-decoration: none; user-select: text; }
+.rdv-note { font-size: 13px; color: #94a3b8; font-style: italic; }
+
+.rdv-actions { display: flex; flex-direction: column; gap: 6px; justify-content: center; }
+
+.rdv-btn {
+  background: #334155;
+  border: none;
+  color: #f8fafc;
+  border-radius: 8px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.rdv-btn:active { transform: scale(0.97); }
+.rdv-btn.primary { background: #166534; }
+.rdv-btn.danger { background: #7f1d1d; }
+.rdv-btn.wide { width: 100%; margin-top: 16px; padding: 13px; font-size: 15px; }
+
+.rdv-section-title {
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #94a3b8;
+  margin: 20px 0 8px;
+}
+
+.rdv-blockrow { display: flex; gap: 8px; flex-wrap: wrap; }
+.rdv-blockrow .rdv-btn { flex: 1; min-width: 96px; }
