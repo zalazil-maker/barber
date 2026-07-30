@@ -31,10 +31,51 @@ const state = {
   entryDate: null, // YYYY-MM-DD; null = today
   analytics: { period: "week", scope: "all", offset: 0 },
   caisse: { barber: null, dayOffset: 0, mode: "esp" },
+  rdvTab: {
+    dayOffset: 0, // 0 = today
+    key: loadAdminKey(),
+    bookings: [],
+    blocked: [],
+    loading: false,
+    error: "",
+    loadedFor: null,
+  },
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
   pending: loadPending(),
   data: { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [], products: [] },
+};
+
+const ADMIN_KEY_STORE = "barbershop_admin_key_v1";
+
+// The admin code is typed once per device and kept locally, so it never has to
+// live in this file (which is served publicly alongside the website).
+function loadAdminKey() {
+  try {
+    return localStorage.getItem(ADMIN_KEY_STORE) || "";
+  } catch (e) {
+    return "";
+  }
+}
+function saveAdminKey(k) {
+  try {
+    localStorage.setItem(ADMIN_KEY_STORE, k);
+  } catch (e) {}
+}
+
+// Booking details come from the public website, so they must never be dropped
+// into innerHTML unescaped.
+function esc(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, (c) => {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c];
+  });
+}
+
+const SERVICE_LABELS = {
+  cheveux: "Cheveux",
+  barbe: "Barbe",
+  both: "Cheveux + Barbe",
+  enfant: "Enfant",
 };
 
 function loadCache() {
@@ -581,12 +622,14 @@ function render() {
 
   html += `<div class="tabs">
     <button class="tab ${state.tab === "register" ? "active" : ""}" data-tab="register">Register</button>
+    <button class="tab ${state.tab === "rdv" ? "active" : ""}" data-tab="rdv">RDV</button>
     <button class="tab ${state.tab === "caisse" ? "active" : ""}" data-tab="caisse">Caisse</button>
     <button class="tab ${state.tab === "stats" ? "active" : ""}" data-tab="stats">Stats</button>
     <button class="tab ${state.tab === "analytics" ? "active" : ""}" data-tab="analytics">Analytics</button>
   </div>`;
 
   if (state.tab === "register") html += renderRegister();
+  else if (state.tab === "rdv") html += renderRDV();
   else if (state.tab === "caisse") html += renderCaisse();
   else if (state.tab === "stats") html += renderStats();
   else if (state.tab === "analytics") html += renderAnalytics();
@@ -763,6 +806,180 @@ function renderRegister() {
     </div>`;
   }
   return "";
+}
+
+// ── RDV (online bookings) ──────────────────────────────────────────────────
+function rdvDateISO() {
+  const d = new Date();
+  d.setDate(d.getDate() + state.rdvTab.dayOffset);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function rdvDayLabel() {
+  const off = state.rdvTab.dayOffset;
+  if (off === 0) return "Today";
+  if (off === 1) return "Tomorrow";
+  if (off === -1) return "Yesterday";
+  const d = new Date();
+  d.setDate(d.getDate() + off);
+  return d.toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short" });
+}
+
+function slotHHMM(min) {
+  return String(Math.floor(min / 60)).padStart(2, "0") + ":" + String(min % 60).padStart(2, "0");
+}
+
+async function loadRDV(force) {
+  const date = rdvDateISO();
+  const t = state.rdvTab;
+  if (!t.key) return;
+  if (!force && t.loadedFor === date) return;
+  t.loading = true;
+  t.error = "";
+  render();
+  try {
+    const res = await fetch(
+      `${WORKER_URL}/api/bookings?from=${date}&to=${date}&key=${encodeURIComponent(t.key)}`
+    );
+    const j = await res.json();
+    if (!res.ok) throw new Error(j.error || "Erreur " + res.status);
+    t.bookings = j.bookings || [];
+    t.blocked = j.blocked || [];
+    t.loadedFor = date;
+  } catch (err) {
+    t.error = String(err.message || err);
+    t.bookings = [];
+    t.blocked = [];
+    t.loadedFor = null;
+  } finally {
+    t.loading = false;
+    render();
+  }
+}
+
+async function rdvAdmin(payload) {
+  const res = await fetch(`${WORKER_URL}/api/admin`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, key: state.rdvTab.key }),
+  });
+  const j = await res.json();
+  if (!res.ok) throw new Error(j.error || "Erreur " + res.status);
+  return j;
+}
+
+function renderRDV() {
+  const t = state.rdvTab;
+
+  if (!t.key) {
+    return `<div class="screen">
+      <h2>Rendez-vous en ligne</h2>
+      <p class="rdv-hint">Entrez le code administrateur une seule fois sur cet appareil.</p>
+      <div class="rdv-keyrow">
+        <input id="rdv-key-input" class="rdv-key-input" type="password" placeholder="Code administrateur" autocomplete="off">
+        <button class="rdv-btn primary" data-action="rdv-save-key">OK</button>
+      </div>
+      ${t.error ? `<div class="rdv-error">${esc(t.error)}</div>` : ""}
+    </div>`;
+  }
+
+  const date = rdvDateISO();
+  let html = `<div class="screen">
+    <div class="rdv-header">
+      <button class="rdv-nav" data-action="rdv-prev">&larr;</button>
+      <div class="rdv-day">
+        <div class="rdv-day-label">${rdvDayLabel()}</div>
+        <div class="rdv-day-date">${date}</div>
+      </div>
+      <button class="rdv-nav" data-action="rdv-next">&rarr;</button>
+    </div>`;
+
+  if (t.error) html += `<div class="rdv-error">${esc(t.error)}</div>`;
+  if (t.loading) html += `<div class="rdv-empty">Chargement…</div>`;
+
+  const active = t.bookings.filter((b) => b.status === "confirmed");
+  const cancelled = t.bookings.filter((b) => b.status !== "confirmed");
+
+  if (!t.loading) {
+    if (!active.length) {
+      html += `<div class="rdv-empty">Aucun rendez-vous ce jour-là.</div>`;
+    } else {
+      const total = active.reduce((s, b) => s + Number(b.price || 0), 0);
+      html += `<div class="rdv-summary">${active.length} RDV · ${total.toFixed(2)}€ attendus</div>`;
+      html += `<div class="rdv-list">`;
+      for (const b of active) {
+        const cls = barberColorClass(b.barber);
+        html += `<div class="rdv-card">
+          <div class="rdv-time">${slotHHMM(Number(b.slot_min))}</div>
+          <div class="rdv-body">
+            <div class="rdv-line1">
+              <span class="rdv-barber ${cls}">${esc(b.barber)}</span>
+              <span class="rdv-service">${esc(SERVICE_LABELS[b.service] || b.service)}</span>
+              <span class="rdv-price">${Number(b.price).toFixed(2)}€</span>
+            </div>
+            <div class="rdv-line2">
+              <span class="rdv-name">${esc(b.name)}</span>
+              <a class="rdv-phone" href="tel:${esc(String(b.phone).replace(/\s/g, ""))}">${esc(b.phone)}</a>
+            </div>
+            ${b.note ? `<div class="rdv-note">${esc(b.note)}</div>` : ""}
+          </div>
+          <div class="rdv-actions">
+            <button class="rdv-btn primary" data-action="rdv-encaisser"
+              data-barber="${esc(b.barber)}" data-price="${esc(b.price)}">Encaisser</button>
+            <button class="rdv-btn danger" data-action="rdv-cancel" data-id="${esc(b.id)}">Annuler</button>
+          </div>
+        </div>`;
+      }
+      html += `</div>`;
+    }
+
+    if (t.blocked.length) {
+      html += `<div class="rdv-section-title">Indisponibilités</div><div class="rdv-list">`;
+      for (const bl of t.blocked) {
+        html += `<div class="rdv-card blocked">
+          <div class="rdv-time">${bl.slot_min == null ? "Jour" : slotHHMM(Number(bl.slot_min))}</div>
+          <div class="rdv-body">
+            <div class="rdv-line1"><span class="rdv-barber ${barberColorClass(bl.barber)}">${esc(bl.barber)}</span>
+            <span class="rdv-service">${esc(bl.reason || "Indisponible")}</span></div>
+          </div>
+          <div class="rdv-actions">
+            <button class="rdv-btn" data-action="rdv-unblock" data-id="${esc(bl.id)}">Rouvrir</button>
+          </div>
+        </div>`;
+      }
+      html += `</div>`;
+    }
+
+    if (cancelled.length) {
+      html += `<div class="rdv-section-title">Annulés</div><div class="rdv-list">`;
+      for (const b of cancelled) {
+        html += `<div class="rdv-card cancelled">
+          <div class="rdv-time">${slotHHMM(Number(b.slot_min))}</div>
+          <div class="rdv-body">
+            <div class="rdv-line1"><span class="rdv-barber ${barberColorClass(b.barber)}">${esc(b.barber)}</span>
+            <span class="rdv-service">${esc(SERVICE_LABELS[b.service] || b.service)}</span></div>
+            <div class="rdv-line2"><span class="rdv-name">${esc(b.name)}</span></div>
+          </div>
+        </div>`;
+      }
+      html += `</div>`;
+    }
+
+    html += `<div class="rdv-section-title">Fermer la journée</div>
+      <div class="rdv-blockrow">`;
+    for (const b of BARBERS) {
+      html += `<button class="rdv-btn" data-action="rdv-block-day" data-barber="${esc(b)}">${esc(b)} en repos</button>`;
+    }
+    html += `<button class="rdv-btn" data-action="rdv-block-day" data-barber="ALL">Salon fermé</button>`;
+    html += `</div>`;
+
+    html += `<button class="rdv-btn wide" data-action="rdv-refresh">Rafraîchir</button>`;
+  }
+
+  return html + `</div>`;
 }
 
 function renderCheckin() {
@@ -1751,6 +1968,7 @@ function attachHandlers() {
       state.selectedDayOffset = null;
       render();
       if (state.tab === "stats" || state.tab === "caisse") syncNow();
+      if (state.tab === "rdv") loadRDV(true);
     });
   });
 
@@ -1767,6 +1985,13 @@ function attachHandlers() {
     });
   }
 
+  const rdvKeyInput = document.getElementById("rdv-key-input");
+  if (rdvKeyInput) {
+    rdvKeyInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") handleAction("rdv-save-key", {});
+    });
+  }
+
   if (state.tab === "caisse") attachCaisseInputs();
 }
 
@@ -1775,6 +2000,76 @@ function handleAction(action, data) {
     case "sync":
       syncNow();
       break;
+    case "rdv-save-key": {
+      const input = document.getElementById("rdv-key-input");
+      const k = input ? input.value.trim() : "";
+      if (!k) return;
+      state.rdvTab.key = k;
+      saveAdminKey(k);
+      state.rdvTab.loadedFor = null;
+      loadRDV(true);
+      break;
+    }
+    case "rdv-prev":
+      state.rdvTab.dayOffset--;
+      loadRDV(true);
+      break;
+    case "rdv-next":
+      state.rdvTab.dayOffset++;
+      loadRDV(true);
+      break;
+    case "rdv-refresh":
+      loadRDV(true);
+      break;
+    case "rdv-cancel": {
+      if (!confirm("Annuler ce rendez-vous ?")) return;
+      rdvAdmin({ op: "cancel", id: data.id })
+        .then(() => {
+          showToast("Rendez-vous annulé");
+          loadRDV(true);
+        })
+        .catch((err) => {
+          state.rdvTab.error = String(err.message || err);
+          render();
+        });
+      break;
+    }
+    case "rdv-unblock": {
+      rdvAdmin({ op: "unblock", id: data.id })
+        .then(() => loadRDV(true))
+        .catch((err) => {
+          state.rdvTab.error = String(err.message || err);
+          render();
+        });
+      break;
+    }
+    case "rdv-block-day": {
+      const who = data.barber === "ALL" ? "le salon" : data.barber;
+      if (!confirm(`Fermer ${rdvDayLabel().toLowerCase()} pour ${who} ?`)) return;
+      rdvAdmin({ op: "block", barber: data.barber, date: rdvDateISO(), slot: null, reason: "Repos" })
+        .then(() => {
+          showToast("Journée fermée");
+          loadRDV(true);
+        })
+        .catch((err) => {
+          state.rdvTab.error = String(err.message || err);
+          render();
+        });
+      break;
+    }
+    case "rdv-encaisser": {
+      // Website prices are already the discounted RDV rate, so the register's
+      // own −10% RDV toggle stays off here to avoid discounting twice.
+      state.tab = "register";
+      state.view = "payment";
+      state.selectedBarber = data.barber;
+      state.amount = String(Math.round(Number(data.price)));
+      state.coupon = false;
+      state.rdv = false;
+      state.entryDate = null;
+      render();
+      break;
+    }
     case "download-pdf":
       generateWeeklyPDF();
       break;
