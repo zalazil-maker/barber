@@ -354,9 +354,15 @@ async function unsubToken(env, email) {
   return bytesToB64url(sig).slice(0, 32);
 }
 
-function promoLines(firstName) {
+// Subject leads with the reminder, because that is the part the customer
+// actually needs an hour before — the offer rides along behind it.
+const PROMO_SUBJECT = "Votre RDV dans 1h — et notre nouveau Rituel Luxe Visage & Barbe ✂️";
+
+function promoLines(firstName, when) {
   return [
     `Bonjour ${firstName},`,
+    ``,
+    when ? `Votre rendez-vous est dans une heure — ${when}.` : `Votre rendez-vous est dans une heure.`,
     ``,
     `Merci pour votre confiance et votre réservation chez Luxury Barber.`,
     ``,
@@ -1338,7 +1344,7 @@ export default {
       // `slot_date + slot_min` is wall-clock time in the shop; `at time zone`
       // turns it into a real instant so the comparison survives DST.
       const due = await q(
-        `select b.id, b.name, b.email, b.slot_date, b.slot_min
+        `select b.id, b.name, b.email, b.slot_date, b.slot_min, b.barber
          from bookings b
          where b.status = 'confirmed'
            and b.promo_sent_at is null
@@ -1366,11 +1372,13 @@ export default {
           `${site}/api/unsub?e=${encodeURIComponent(b64urlEncode(row.email))}` +
           `&t=${await unsubToken(env, row.email)}`;
 
+        const when = `à ${hhmm(Number(row.slot_min)).replace(":", "h")} avec ${row.barber}`;
+
         await sendMail(
           env,
           row.email,
-          "Découvrez notre nouveau Rituel Luxe Visage & Barbe ✂️",
-          promoLines(String(row.name || "").split(/\s+/)[0] || "").concat([
+          PROMO_SUBJECT,
+          promoLines(String(row.name || "").split(/\s+/)[0] || "", when).concat([
             ``,
             `—`,
             `Vous recevez cet email car vous avez réservé chez Luxury Barber.`,
