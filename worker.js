@@ -387,52 +387,51 @@ function promoLines(firstName) {
   ];
 }
 
+// Builds the database query function. Lifted out of fetch() so the cron
+// handler can use it too.
+function makeQuery(env) {
+  const connectionString = cleanConnString(env.DATABASE_URL);
+  if (!connectionString) throw new Error("DATABASE_URL secret is not set");
+
+  // Derive Neon's SQL-over-HTTP endpoint from the connection string host,
+  // exactly how the Neon serverless driver does it.
+  let host;
+  try {
+    host = new URL(connectionString).hostname;
+  } catch (e) {
+    const m = connectionString.match(/@([^/:?]+)/);
+    if (m) host = m[1];
+  }
+  if (!host) throw new Error("Bad DATABASE_URL format");
+
+  const sqlUrl = "https://" + host.replace(/^[^.]+\./, "api.") + "/sql";
+
+  return async function q(query, params = []) {
+    const r = await fetch(sqlUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Neon-Connection-String": connectionString,
+      },
+      body: JSON.stringify({ query, params }),
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error("DB " + r.status + ": " + text);
+    return text ? JSON.parse(text) : { rows: [] };
+  };
+}
+
 export default {
   async fetch(request, env) {
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: CORS });
     }
 
-    const connectionString = cleanConnString(env.DATABASE_URL);
-    if (!connectionString) {
-      return json({ error: "DATABASE_URL secret is not set" }, 500);
-    }
-
-    // Derive Neon's SQL-over-HTTP endpoint from the connection string host,
-    // exactly how the Neon serverless driver does it.
-    let sqlUrl;
+    let q;
     try {
-      let host;
-      try {
-        host = new URL(connectionString).hostname;
-      } catch (e) {
-        const m = connectionString.match(/@([^/:?]+)/);
-        if (m) host = m[1];
-      }
-      if (!host) {
-        return json(
-          { error: "Bad DATABASE_URL format", starts_with: connectionString.slice(0, 13) },
-          500
-        );
-      }
-      const apiHost = host.replace(/^[^.]+\./, "api.");
-      sqlUrl = "https://" + apiHost + "/sql";
+      q = makeQuery(env);
     } catch (e) {
-      return json({ error: "Bad DATABASE_URL format" }, 500);
-    }
-
-    async function q(query, params = []) {
-      const r = await fetch(sqlUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Neon-Connection-String": connectionString,
-        },
-        body: JSON.stringify({ query, params }),
-      });
-      const text = await r.text();
-      if (!r.ok) throw new Error("DB " + r.status + ": " + text);
-      return text ? JSON.parse(text) : { rows: [] };
+      return json({ error: String(e.message || e) }, 500);
     }
 
     // Creates the booking tables on first use so there is no manual SQL step.
@@ -529,6 +528,9 @@ export default {
         }
       }
 
+      // Records when the pre-appointment promo went out, so the cron handler
+      // sends it exactly once per booking.
+      await q("alter table bookings add column if not exists promo_sent_at timestamptz");
       await q(
         `create table if not exists marketing_optout (
            email text primary key,
@@ -853,32 +855,10 @@ export default {
               v.note ? `Note       : ${v.note}` : ``,
             ]);
             if (v.email) {
-              // Second email: the shop's current promotion. Skipped for anyone
-              // who has unsubscribed, and never allowed to hold up the booking.
-              try {
-                const out = await q("select 1 from marketing_optout where email = $1", [
-                  v.email.toLowerCase(),
-                ]);
-                if (!(out.rows || []).length) {
-                  const site = env.SITE_URL || "https://luxurybarber80.fr";
-                  const unsub =
-                    `${site}/api/unsub?e=${encodeURIComponent(b64urlEncode(v.email))}` +
-                    `&t=${await unsubToken(env, v.email)}`;
-                  await sendMail(
-                    env,
-                    v.email,
-                    "Découvrez notre nouveau Rituel Luxe Visage & Barbe ✂️",
-                    promoLines(v.name.split(/\s+/)[0]).concat([
-                      ``,
-                      `—`,
-                      `Vous recevez cet email car vous avez réservé chez Luxury Barber.`,
-                      `Ne plus recevoir nos actualités : ${unsub}`,
-                    ]),
-                    { "List-Unsubscribe": `<${unsub}>` }
-                  );
-                }
-              } catch (e) {}
-
+              // The promotional email is NOT sent here — the cron handler
+              // below sends it an hour before the appointment, so it lands
+              // when the customer is about to come in, and is skipped
+              // entirely if they cancel in the meantime.
               await sendMail(env, v.email, `Votre rendez-vous chez Luxury Barber — ${when}`, [
                 `Bonjour ${v.name},`,
                 ``,
@@ -1333,6 +1313,74 @@ export default {
       return json({ error: "Method not allowed" }, 405);
     } catch (err) {
       return json({ error: String(err && err.message ? err.message : err) }, 500);
+    }
+  },
+
+  // ── Cron: the pre-appointment promotional email ──────────────────────────
+  // Runs on a Cloudflare Cron Trigger (every 5 minutes). Sends the shop's
+  // promotion to anyone whose appointment starts within the next hour and who
+  // has not already received it.
+  //
+  // Doing it here rather than at booking time means a customer who cancels
+  // never gets it, and someone booking three weeks ahead is not emailed three
+  // weeks early.
+  async scheduled(event, env, ctx) {
+    if (!env.RESEND_API_KEY) return;
+
+    let q;
+    try {
+      q = makeQuery(env);
+    } catch (e) {
+      return;
+    }
+
+    try {
+      // `slot_date + slot_min` is wall-clock time in the shop; `at time zone`
+      // turns it into a real instant so the comparison survives DST.
+      const due = await q(
+        `select b.id, b.name, b.email, b.slot_date, b.slot_min
+         from bookings b
+         where b.status = 'confirmed'
+           and b.promo_sent_at is null
+           and b.email is not null
+           and not exists (
+             select 1 from marketing_optout m where m.email = lower(b.email)
+           )
+           and ((b.slot_date + (b.slot_min || ' minutes')::interval)
+                 at time zone 'Europe/Paris') between now() and now() + interval '60 minutes'
+         limit 50`
+      );
+
+      const site = env.SITE_URL || "https://luxurybarber80.fr";
+
+      for (const row of due.rows || []) {
+        // Claim it first: if the send fails we would rather skip one promo
+        // than risk emailing the same customer on every cron tick.
+        const claimed = await q(
+          "update bookings set promo_sent_at = now() where id = $1 and promo_sent_at is null",
+          [row.id]
+        );
+        if (Number(claimed.rowCount || 0) === 0) continue;
+
+        const unsub =
+          `${site}/api/unsub?e=${encodeURIComponent(b64urlEncode(row.email))}` +
+          `&t=${await unsubToken(env, row.email)}`;
+
+        await sendMail(
+          env,
+          row.email,
+          "Découvrez notre nouveau Rituel Luxe Visage & Barbe ✂️",
+          promoLines(String(row.name || "").split(/\s+/)[0] || "").concat([
+            ``,
+            `—`,
+            `Vous recevez cet email car vous avez réservé chez Luxury Barber.`,
+            `Ne plus recevoir nos actualités : ${unsub}`,
+          ]),
+          { "List-Unsubscribe": `<${unsub}>` }
+        );
+      }
+    } catch (e) {
+      // A failed run is retried on the next tick; nothing else depends on it.
     }
   },
 };
