@@ -22,27 +22,33 @@ const CORS = {
 };
 
 // ── Shop configuration ──────────────────────────────────────────────────────
-// The website reads this over /api/config, so prices and hours only ever need
-// to change here.
-const BARBERS = ["Momo", "Amine"];
+// Services, barbers and opening hours live in the database so the owner can
+// edit them from /admin. These constants only seed an empty database on first
+// run — after that the tables are the source of truth.
+const DEFAULT_BARBERS = ["Momo", "Amine"];
 
 // `price` is the online-booking (RDV) price — the discounted rate customers
 // only get by booking here. `planity` is the regular Planity/walk-in rate,
 // shown struck through so the saving is visible. Omit `planity` for services
 // with no comparable Planity rate.
-const SERVICES = {
-  cheveux: { label: "Cheveux", price: 18.0, planity: 20.0, duration: 30 },
-  barbe: { label: "Barbe", price: 9.99, planity: 12.0, duration: 30 },
-  both: { label: "Cheveux + Barbe", price: 23.99, planity: 26.0, duration: 30 },
-  enfant: { label: "Enfant", price: 12.0, duration: 30 },
-};
+const DEFAULT_SERVICES = [
+  { id: "cheveux", label: "Cheveux", price: 18.0, planity: 20.0, duration: 30, icon: "ico-ciseaux",
+    description: "Coupe homme soignée, adaptée à votre style. Dégradé, classique ou moderne — le résultat est toujours net." },
+  { id: "barbe", label: "Barbe", price: 9.99, planity: 12.0, duration: 30, icon: "ico-rasoir",
+    description: "Taille et contours de barbe à la tondeuse et au rasoir, finition serviette chaude. Net, précis, rapide." },
+  { id: "both", label: "Cheveux + Barbe", price: 23.99, planity: 26.0, duration: 30, icon: "ico-poteau",
+    description: "Le combo complet — coupe homme et taille de barbe soignée pour un look parfaitement abouti de la tête aux pieds." },
+  { id: "enfant", label: "Enfant", price: 12.0, planity: null, duration: 30, icon: "ico-enfant",
+    description: "Coupe pour les petits dans une ambiance détendue. Pour que vos enfants repartent contents et bien coiffés." },
+];
 
-const SLOT_MIN = 30; // minutes per bookable slot
+const DEFAULT_SLOT_MIN = 30; // minutes per bookable slot
 const MAX_DAYS_AHEAD = 60; // how far in advance customers may book
 const MAX_UPCOMING_PER_PHONE = 3; // simple abuse guard
 
 // Opening hours in minutes from midnight, keyed by JS weekday (0 = Sunday).
-const HOURS = {
+// A day with `null` is closed.
+const DEFAULT_HOURS = {
   0: [600, 1200], // Sunday   10h00 – 20h00
   1: [570, 1200], // Monday    9h30 – 20h00
   2: [570, 1200],
@@ -50,6 +56,16 @@ const HOURS = {
   4: [570, 1200],
   5: [570, 1200],
   6: [570, 1200], // Saturday  9h30 – 20h00
+};
+
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024; // per photo/video
+const ALLOWED_MEDIA = {
+  "image/jpeg": "jpg",
+  "image/png": "png",
+  "image/webp": "webp",
+  "video/mp4": "mp4",
+  "video/quicktime": "mov",
+  "video/webm": "webm",
 };
 
 const SHOP_TZ = "Europe/Paris";
@@ -114,12 +130,13 @@ function daysBetween(fromISO, toISO) {
   return Math.round((b - a) / 86400000);
 }
 
-function slotsForDate(dateStr) {
-  const hours = HOURS[weekdayOf(dateStr)];
-  if (!hours) return [];
+function slotsForDate(dateStr, cfg) {
+  const hours = cfg.hours[weekdayOf(dateStr)];
+  if (!hours || !Array.isArray(hours) || hours.length !== 2) return [];
   const [open, close] = hours;
+  const step = cfg.slotMinutes;
   const out = [];
-  for (let t = open; t + SLOT_MIN <= close; t += SLOT_MIN) out.push(t);
+  for (let t = open; t + step <= close; t += step) out.push(t);
   return out;
 }
 
@@ -148,11 +165,11 @@ function cleanText(v, max) {
   return v.replace(/[\u0000-\u001f\u007f]/g, " ").trim().slice(0, max);
 }
 
-function validBooking(body) {
-  const service = SERVICES[body.service] ? body.service : null;
+function validBooking(body, cfg) {
+  const service = cfg.services[body.service] ? body.service : null;
   if (!service) return { error: "Prestation inconnue." };
 
-  const barber = body.barber === "any" || BARBERS.includes(body.barber) ? body.barber : null;
+  const barber = body.barber === "any" || cfg.barbers.includes(body.barber) ? body.barber : null;
   if (!barber) return { error: "Barbier inconnu." };
 
   if (!isValidDate(body.date)) return { error: "Date invalide." };
@@ -163,7 +180,7 @@ function validBooking(body) {
   if (ahead > MAX_DAYS_AHEAD) return { error: "Réservation trop lointaine." };
 
   const slot = Number(body.slot);
-  if (!Number.isInteger(slot) || !slotsForDate(body.date).includes(slot)) {
+  if (!Number.isInteger(slot) || !slotsForDate(body.date, cfg).includes(slot)) {
     return { error: "Créneau invalide." };
   }
   if (ahead === 0 && slot <= now.minutes) return { error: "Ce créneau est déjà passé." };
@@ -174,8 +191,11 @@ function validBooking(body) {
   const phone = cleanText(body.phone, 25);
   if (!/^[+\d][\d\s().-]{5,}$/.test(phone)) return { error: "Numéro de téléphone invalide." };
 
+  // The email is what carries the confirmation and the cancel link, so it is
+  // required rather than optional.
   const email = cleanText(body.email, 120);
-  if (email && !/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)) return { error: "Email invalide." };
+  if (!email) return { error: "Merci d'indiquer votre email pour recevoir la confirmation." };
+  if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)) return { error: "Email invalide." };
 
   return {
     service,
@@ -379,6 +399,73 @@ export default {
         `create unique index if not exists bookings_slot_uniq
            on bookings (barber, slot_date, slot_min) where status = 'confirmed'`
       );
+      // Editable shop configuration. Seeded from the constants above the first
+      // time it runs, then owned by /admin.
+      await q(
+        `create table if not exists services (
+           id text primary key,
+           label text not null,
+           price numeric(6,2) not null,
+           planity numeric(6,2),
+           duration int not null default 30,
+           icon text,
+           description text,
+           sort int not null default 0,
+           active boolean not null default true
+         )`
+      );
+      await q("alter table services add column if not exists description text");
+      // barbers.id holds the name, because events.barber and bookings.barber
+      // already store names — keeping them equal avoids migrating history.
+      await q(
+        `create table if not exists barbers (
+           id text primary key,
+           name text not null,
+           photo_key text,
+           sort int not null default 0,
+           active boolean not null default true
+         )`
+      );
+      await q(
+        `create table if not exists settings (
+           key text primary key,
+           value text not null
+         )`
+      );
+      await q(
+        `create table if not exists media (
+           id text primary key,
+           kind text not null,
+           r2_key text not null,
+           mime text,
+           caption text,
+           sort int not null default 0,
+           created_at timestamptz not null default now()
+         )`
+      );
+
+      const svcCount = await q("select count(*)::int as n from services");
+      if (Number((svcCount.rows || [{}])[0]?.n || 0) === 0) {
+        let i = 0;
+        for (const s of DEFAULT_SERVICES) {
+          await q(
+            `insert into services (id,label,price,planity,duration,icon,description,sort)
+             values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (id) do nothing`,
+            [s.id, s.label, s.price, s.planity, s.duration, s.icon, s.description, i++]
+          );
+        }
+      }
+      const barbCount = await q("select count(*)::int as n from barbers");
+      if (Number((barbCount.rows || [{}])[0]?.n || 0) === 0) {
+        let i = 0;
+        for (const b of DEFAULT_BARBERS) {
+          await q(
+            "insert into barbers (id,name,sort) values ($1,$2,$3) on conflict (id) do nothing",
+            [b, b, i++]
+          );
+        }
+      }
+
       await q(
         `create table if not exists push_subscriptions (
            endpoint text primary key,
@@ -407,6 +494,61 @@ export default {
       eventsColumnsReady = true;
     }
 
+    // Reads the live shop configuration. Everything downstream — availability,
+    // validation, pricing — goes through this rather than the constants, so an
+    // edit in /admin takes effect on the next request.
+    async function loadConfig() {
+      await ensureSchema();
+      const [svc, barb, set] = await Promise.all([
+        q("select id,label,price,planity,duration,icon,description,sort from services where active order by sort, label"),
+        q("select id,name,photo_key,sort from barbers where active order by sort, name"),
+        q("select key,value from settings"),
+      ]);
+
+      const services = {};
+      for (const r of svc.rows || []) {
+        services[r.id] = {
+          label: r.label,
+          price: Number(r.price),
+          planity: r.planity == null ? null : Number(r.planity),
+          duration: Number(r.duration) || DEFAULT_SLOT_MIN,
+          icon: r.icon || null,
+          desc: r.description || "",
+        };
+      }
+
+      const barberRows = barb.rows || [];
+      const barbers = barberRows.map((r) => r.id);
+      const barberInfo = barberRows.map((r) => ({
+        name: r.name || r.id,
+        id: r.id,
+        photo: r.photo_key ? "/api/media/" + r.photo_key : null,
+      }));
+
+      const settings = {};
+      for (const r of set.rows || []) {
+        try {
+          settings[r.key] = JSON.parse(r.value);
+        } catch (e) {}
+      }
+
+      return {
+        services,
+        barbers,
+        barberInfo,
+        hours: settings.hours || DEFAULT_HOURS,
+        slotMinutes: Number(settings.slotMinutes) || DEFAULT_SLOT_MIN,
+      };
+    }
+
+    async function saveSetting(key, value) {
+      await q(
+        `insert into settings (key,value) values ($1,$2)
+         on conflict (key) do update set value = excluded.value`,
+        [key, JSON.stringify(value)]
+      );
+    }
+
     function requireAdmin(body) {
       const expected = env.ADMIN_KEY;
       if (!expected) return "ADMIN_KEY secret is not set";
@@ -421,14 +563,38 @@ export default {
       // ── Booking API ────────────────────────────────────────────────────
       if (path.startsWith("/api/")) {
         if (path === "/api/config") {
+          const cfg = await loadConfig();
+          const gallery = await q(
+            "select id, kind, r2_key, caption from media order by sort, created_at desc limit 60"
+          );
           return json({
-            barbers: BARBERS,
-            services: SERVICES,
-            slotMinutes: SLOT_MIN,
+            barbers: cfg.barbers,
+            barberInfo: cfg.barberInfo,
+            services: cfg.services,
+            slotMinutes: cfg.slotMinutes,
             maxDaysAhead: MAX_DAYS_AHEAD,
-            hours: HOURS,
+            hours: cfg.hours,
             today: shopNow().date,
+            media: (gallery.rows || []).map((m) => ({
+              id: m.id,
+              kind: m.kind,
+              url: "/api/media/" + m.r2_key,
+              caption: m.caption,
+            })),
           });
+        }
+
+        // Public: serve an uploaded photo or video out of R2.
+        if (path.startsWith("/api/media/")) {
+          if (!env.MEDIA) return json({ error: "Stockage non configuré." }, 503);
+          const key = decodeURIComponent(path.slice("/api/media/".length));
+          const obj = await env.MEDIA.get(key);
+          if (!obj) return json({ error: "Introuvable." }, 404);
+          const headers = new Headers(CORS);
+          headers.set("Content-Type", obj.httpMetadata?.contentType || "application/octet-stream");
+          headers.set("Cache-Control", "public, max-age=31536000, immutable");
+          if (obj.size != null) headers.set("Content-Length", String(obj.size));
+          return new Response(obj.body, { headers });
         }
 
         if (path === "/api/availability") {
@@ -441,8 +607,8 @@ export default {
             return json({ date, closed: true, barbers: {} });
           }
 
-          await ensureSchema();
-          const all = slotsForDate(date);
+          const cfg = await loadConfig();
+          const all = slotsForDate(date, cfg);
           if (!all.length) return json({ date, closed: true, barbers: {} });
 
           const taken = await q(
@@ -455,7 +621,7 @@ export default {
           );
 
           const out = {};
-          for (const b of BARBERS) {
+          for (const b of cfg.barbers) {
             const busy = new Set();
             for (const r of taken.rows || []) {
               if (r.barber === b) busy.add(Number(r.slot_min));
@@ -470,7 +636,7 @@ export default {
               ? []
               : all.filter((s) => !busy.has(s) && !(ahead === 0 && s <= now.minutes));
           }
-          return json({ date, closed: false, slotMinutes: SLOT_MIN, barbers: out });
+          return json({ date, closed: false, slotMinutes: cfg.slotMinutes, barbers: out });
         }
 
         // The public VAPID key is safe to hand out — the app needs it to
@@ -529,10 +695,9 @@ export default {
         if (path === "/api/book") {
           if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
           const body = await request.json();
-          const v = validBooking(body);
+          const cfg = await loadConfig();
+          const v = validBooking(body, cfg);
           if (v.error) return json({ error: v.error }, 400);
-
-          await ensureSchema();
 
           const upcoming = await q(
             `select count(*)::int as n from bookings
@@ -556,10 +721,10 @@ export default {
             return json({ error: "Ce créneau n'est plus disponible." }, 409);
           }
 
-          const svc = SERVICES[v.service];
+          const svc = cfg.services[v.service];
           // For "peu importe", try each barber in turn; the unique index below
           // decides the winner if someone books the same slot concurrently.
-          const candidates = v.barber === "any" ? BARBERS : [v.barber];
+          const candidates = v.barber === "any" ? cfg.barbers : [v.barber];
 
           for (const barber of candidates) {
             const off = await q(
@@ -692,6 +857,235 @@ export default {
           return json({ bookings: rows.rows || [], blocked: blocked.rows || [] });
         }
 
+        // ── /admin panel: shop configuration ─────────────────────────────
+        if (path === "/api/admin/config") {
+          if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+          const body = await request.json();
+          const denied = requireAdmin(body);
+          if (denied) return json({ error: denied }, 401);
+          await ensureSchema();
+
+          // Everything the panel needs to render, including hidden entries.
+          if (body.op === "state") {
+            const [svc, barb, med, set] = await Promise.all([
+              q("select id,label,price,planity,duration,icon,description,sort,active from services order by sort, label"),
+              q("select id,name,photo_key,sort,active from barbers order by sort, name"),
+              q("select id,kind,r2_key,caption,sort,created_at from media order by sort, created_at desc"),
+              q("select key,value from settings"),
+            ]);
+            const settings = {};
+            for (const r of set.rows || []) {
+              try {
+                settings[r.key] = JSON.parse(r.value);
+              } catch (e) {}
+            }
+            return json({
+              services: (svc.rows || []).map((r) => ({
+                ...r,
+                price: Number(r.price),
+                planity: r.planity == null ? null : Number(r.planity),
+                duration: Number(r.duration),
+                sort: Number(r.sort),
+              })),
+              barbers: (barb.rows || []).map((r) => ({
+                id: r.id,
+                name: r.name,
+                sort: Number(r.sort),
+                active: r.active === true || r.active === "t",
+                photo: r.photo_key ? "/api/media/" + r.photo_key : null,
+              })),
+              media: (med.rows || []).map((m) => ({
+                id: m.id,
+                kind: m.kind,
+                url: "/api/media/" + m.r2_key,
+                caption: m.caption,
+                sort: Number(m.sort),
+              })),
+              hours: settings.hours || DEFAULT_HOURS,
+              slotMinutes: Number(settings.slotMinutes) || DEFAULT_SLOT_MIN,
+              storage: !!env.MEDIA,
+              email: !!env.RESEND_API_KEY,
+            });
+          }
+
+          // Services ------------------------------------------------------
+          if (body.op === "service-save") {
+            const s = body.service || {};
+            const id = cleanText(s.id, 40).toLowerCase().replace(/[^a-z0-9_-]/g, "");
+            if (!id) return json({ error: "Identifiant de prestation invalide." }, 400);
+            const label = cleanText(s.label, 60);
+            if (!label) return json({ error: "Le nom de la prestation est obligatoire." }, 400);
+            const price = Number(s.price);
+            if (!Number.isFinite(price) || price < 0 || price > 999) {
+              return json({ error: "Prix invalide." }, 400);
+            }
+            const planity =
+              s.planity === "" || s.planity == null ? null : Number(s.planity);
+            if (planity != null && (!Number.isFinite(planity) || planity < 0 || planity > 999)) {
+              return json({ error: "Prix Planity invalide." }, 400);
+            }
+            const duration = Number(s.duration) || DEFAULT_SLOT_MIN;
+            await q(
+              `insert into services (id,label,price,planity,duration,icon,description,sort,active)
+               values ($1,$2,$3,$4,$5,$6,$7,$8,true)
+               on conflict (id) do update set
+                 label=excluded.label, price=excluded.price, planity=excluded.planity,
+                 duration=excluded.duration, icon=excluded.icon,
+                 description=excluded.description, sort=excluded.sort, active=true`,
+              [id, label, price, planity, duration, cleanText(s.icon, 40) || null,
+               cleanText(s.description, 300) || null, Number(s.sort) || 0]
+            );
+            return json({ ok: true, id });
+          }
+
+          if (body.op === "service-delete") {
+            // Soft delete: past bookings still reference the service id.
+            await q("update services set active=false where id=$1", [String(body.id || "")]);
+            return json({ ok: true });
+          }
+
+          // Barbers -------------------------------------------------------
+          if (body.op === "barber-save") {
+            const b = body.barber || {};
+            const name = cleanText(b.name, 40);
+            if (!name) return json({ error: "Le nom du barbier est obligatoire." }, 400);
+            const id = cleanText(b.id, 40) || name;
+            await q(
+              `insert into barbers (id,name,sort,active) values ($1,$2,$3,true)
+               on conflict (id) do update set name=excluded.name, sort=excluded.sort, active=true`,
+              [id, name, Number(b.sort) || 0]
+            );
+            return json({ ok: true, id });
+          }
+
+          if (body.op === "barber-delete") {
+            // Soft delete so their history and takings stay intact.
+            await q("update barbers set active=false where id=$1", [String(body.id || "")]);
+            return json({ ok: true });
+          }
+
+          // Opening hours -------------------------------------------------
+          if (body.op === "hours-save") {
+            const h = body.hours || {};
+            const clean = {};
+            for (let d = 0; d <= 6; d++) {
+              const v = h[d] ?? h[String(d)];
+              if (v == null) {
+                clean[d] = null; // closed
+                continue;
+              }
+              const open = Number(v[0]);
+              const close = Number(v[1]);
+              if (!Number.isInteger(open) || !Number.isInteger(close) || open < 0 || close > 1440 || open >= close) {
+                return json({ error: `Horaires invalides pour le jour ${d}.` }, 400);
+              }
+              clean[d] = [open, close];
+            }
+            await saveSetting("hours", clean);
+
+            if (body.slotMinutes != null) {
+              const sm = Number(body.slotMinutes);
+              if (![10, 15, 20, 30, 45, 60].includes(sm)) {
+                return json({ error: "Durée de créneau invalide." }, 400);
+              }
+              await saveSetting("slotMinutes", sm);
+            }
+            return json({ ok: true });
+          }
+
+          return json({ error: "Unknown op" }, 400);
+        }
+
+        // ── /admin panel: media (photos & videos) ────────────────────────
+        if (path === "/api/admin/media") {
+          if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+          if (!env.MEDIA) {
+            return json(
+              { error: "Stockage R2 non configuré. Créez un bucket et liez-le sous le nom MEDIA." },
+              503
+            );
+          }
+          await ensureSchema();
+
+          const ct = request.headers.get("Content-Type") || "";
+
+          // Upload arrives as multipart so the file streams rather than being
+          // base64'd through JSON.
+          if (ct.includes("multipart/form-data")) {
+            const form = await request.formData();
+            const denied = requireAdmin({ key: form.get("key") });
+            if (denied) return json({ error: denied }, 401);
+
+            const file = form.get("file");
+            if (!file || typeof file === "string") return json({ error: "Aucun fichier." }, 400);
+
+            const mime = file.type || "";
+            const ext = ALLOWED_MEDIA[mime];
+            if (!ext) {
+              return json({ error: "Format non accepté (JPEG, PNG, WebP, MP4, MOV, WebM)." }, 400);
+            }
+            if (file.size > MAX_UPLOAD_BYTES) {
+              return json({ error: "Fichier trop lourd (25 Mo maximum)." }, 413);
+            }
+
+            const kind = mime.startsWith("video/") ? "video" : "photo";
+            const target = String(form.get("target") || "gallery"); // gallery | barber
+            const r2key = `${target}/${token()}.${ext}`;
+            await env.MEDIA.put(r2key, file.stream(), {
+              httpMetadata: { contentType: mime },
+            });
+
+            if (target === "barber") {
+              const barberId = cleanText(form.get("barberId"), 40);
+              if (!barberId) return json({ error: "Barbier manquant." }, 400);
+              const prev = await q("select photo_key from barbers where id=$1", [barberId]);
+              await q("update barbers set photo_key=$1 where id=$2", [r2key, barberId]);
+              const old = (prev.rows || [{}])[0]?.photo_key;
+              if (old) await env.MEDIA.delete(old).catch(() => {});
+              return json({ ok: true, url: "/api/media/" + r2key });
+            }
+
+            const id = token();
+            await q(
+              `insert into media (id,kind,r2_key,mime,caption,sort)
+               values ($1,$2,$3,$4,$5,$6)`,
+              [id, kind, r2key, mime, cleanText(form.get("caption"), 120) || null, Number(form.get("sort")) || 0]
+            );
+            return json({ ok: true, id, kind, url: "/api/media/" + r2key });
+          }
+
+          // JSON body — delete or re-caption.
+          const body = await request.json();
+          const denied = requireAdmin(body);
+          if (denied) return json({ error: denied }, 401);
+
+          if (body.op === "delete") {
+            const row = await q("select r2_key from media where id=$1", [String(body.id || "")]);
+            const key = (row.rows || [{}])[0]?.r2_key;
+            await q("delete from media where id=$1", [String(body.id || "")]);
+            if (key) await env.MEDIA.delete(key).catch(() => {});
+            return json({ ok: true });
+          }
+
+          if (body.op === "caption") {
+            await q("update media set caption=$1 where id=$2", [
+              cleanText(body.caption, 120) || null,
+              String(body.id || ""),
+            ]);
+            return json({ ok: true });
+          }
+
+          if (body.op === "barber-photo-delete") {
+            const prev = await q("select photo_key from barbers where id=$1", [String(body.id || "")]);
+            const key = (prev.rows || [{}])[0]?.photo_key;
+            await q("update barbers set photo_key=null where id=$1", [String(body.id || "")]);
+            if (key) await env.MEDIA.delete(key).catch(() => {});
+            return json({ ok: true });
+          }
+
+          return json({ error: "Unknown op" }, 400);
+        }
+
         if (path === "/api/admin") {
           if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
           const body = await request.json();
@@ -709,10 +1103,12 @@ export default {
 
           if (body.op === "block") {
             if (!isValidDate(body.date)) return json({ error: "Date invalide." }, 400);
-            const barber = body.barber === "ALL" || BARBERS.includes(body.barber) ? body.barber : null;
+            const acfg = await loadConfig();
+            const barber =
+              body.barber === "ALL" || acfg.barbers.includes(body.barber) ? body.barber : null;
             if (!barber) return json({ error: "Barbier inconnu." }, 400);
             const slot = body.slot == null ? null : Number(body.slot);
-            if (slot != null && !slotsForDate(body.date).includes(slot)) {
+            if (slot != null && !slotsForDate(body.date, acfg).includes(slot)) {
               return json({ error: "Créneau invalide." }, 400);
             }
             await q(
