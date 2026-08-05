@@ -303,25 +303,88 @@ async function sendPushes(env, subscriptions) {
 // ── Email notification (optional) ───────────────────────────────────────────
 // Only fires when RESEND_API_KEY and SHOP_EMAIL are configured; a mail failure
 // must never lose a booking that is already committed to the database.
-async function sendMail(env, to, subject, lines) {
+async function sendMail(env, to, subject, lines, extraHeaders) {
   if (!env.RESEND_API_KEY || !to) return;
   try {
+    const payload = {
+      from: env.MAIL_FROM || "Luxury Barber <onboarding@resend.dev>",
+      to: [to],
+      subject,
+      text: lines.join("\n"),
+    };
+    if (extraHeaders) payload.headers = extraHeaders;
     await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         Authorization: "Bearer " + env.RESEND_API_KEY,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        from: env.MAIL_FROM || "Luxury Barber <onboarding@resend.dev>",
-        to: [to],
-        subject,
-        text: lines.join("\n"),
-      }),
+      body: JSON.stringify(payload),
     });
   } catch (e) {
     // swallowed on purpose — see comment above
   }
+}
+
+// ── Marketing email ─────────────────────────────────────────────────────────
+// Sent alongside the confirmation. French law (art. L34-5 CPCE) allows this to
+// an existing customer for similar services, provided they were told when the
+// address was collected and every message carries a working opt-out — hence
+// the notice on the booking form and the unsubscribe link below.
+function b64urlEncode(s) {
+  return btoa(unescape(encodeURIComponent(s)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64urlDecode(s) {
+  s = String(s).replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  return decodeURIComponent(escape(atob(s)));
+}
+
+// Signed with ADMIN_KEY so nobody can unsubscribe someone else's address.
+async function unsubToken(env, email) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(String(env.ADMIN_KEY || "lb")),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(email.toLowerCase()));
+  return bytesToB64url(sig).slice(0, 32);
+}
+
+function promoLines(firstName) {
+  return [
+    `Bonjour ${firstName},`,
+    ``,
+    `Merci pour votre confiance et votre réservation chez Luxury Barber.`,
+    ``,
+    `Nous avons le plaisir de vous annoncer notre nouveau soin signature :`,
+    `le Rituel Luxe Visage & Barbe.`,
+    ``,
+    `Une expérience complète qui va au-delà de la simple coupe :`,
+    ``,
+    `  • Coupe et taille de barbe soignées`,
+    `  • Shampooing et soin capillaire`,
+    `  • Exfoliation du visage`,
+    `  • Application de soins visage premium (sérums vitamine C, niacinamide, hydratation)`,
+    ``,
+    `Un moment de détente et de soin pensé pour les hommes qui veulent prendre`,
+    `soin de leur peau autant que de leur style.`,
+    ``,
+    `Nous proposons également une sélection de produits de soin à emporter,`,
+    `avec des conseils d'utilisation clairs pour prolonger les résultats à la maison.`,
+    ``,
+    `Envie d'essayer ? Parlez-en à votre barbier lors de votre prochain passage —`,
+    `il vous présentera le rituel et vous orientera vers ce qui convient le mieux`,
+    `à votre peau.`,
+    ``,
+    `À très bientôt,`,
+    `L'équipe Luxury Barber`,
+    `11 rue Duméril, 80000 Amiens`,
+    `@luxurybarber80`,
+  ];
 }
 
 export default {
@@ -466,6 +529,12 @@ export default {
         }
       }
 
+      await q(
+        `create table if not exists marketing_optout (
+           email text primary key,
+           created_at timestamptz not null default now()
+         )`
+      );
       await q(
         `create table if not exists push_subscriptions (
            endpoint text primary key,
@@ -784,6 +853,32 @@ export default {
               v.note ? `Note       : ${v.note}` : ``,
             ]);
             if (v.email) {
+              // Second email: the shop's current promotion. Skipped for anyone
+              // who has unsubscribed, and never allowed to hold up the booking.
+              try {
+                const out = await q("select 1 from marketing_optout where email = $1", [
+                  v.email.toLowerCase(),
+                ]);
+                if (!(out.rows || []).length) {
+                  const site = env.SITE_URL || "https://luxurybarber80.fr";
+                  const unsub =
+                    `${site}/api/unsub?e=${encodeURIComponent(b64urlEncode(v.email))}` +
+                    `&t=${await unsubToken(env, v.email)}`;
+                  await sendMail(
+                    env,
+                    v.email,
+                    "Découvrez notre nouveau Rituel Luxe Visage & Barbe ✂️",
+                    promoLines(v.name.split(/\s+/)[0]).concat([
+                      ``,
+                      `—`,
+                      `Vous recevez cet email car vous avez réservé chez Luxury Barber.`,
+                      `Ne plus recevoir nos actualités : ${unsub}`,
+                    ]),
+                    { "List-Unsubscribe": `<${unsub}>` }
+                  );
+                }
+              } catch (e) {}
+
               await sendMail(env, v.email, `Votre rendez-vous chez Luxury Barber — ${when}`, [
                 `Bonjour ${v.name},`,
                 ``,
@@ -813,6 +908,45 @@ export default {
           }
 
           return json({ error: "Ce créneau vient d'être réservé. Choisissez-en un autre." }, 409);
+        }
+
+        // One-click unsubscribe from the marketing email. Reached from the
+        // link in the message and from the List-Unsubscribe header, so it has
+        // to work on a plain GET with no session.
+        if (path === "/api/unsub") {
+          const page = (title, body) =>
+            new Response(
+              `<!doctype html><html lang="fr"><meta charset="utf-8">` +
+                `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+                `<title>${title}</title>` +
+                `<body style="background:#0d0d0d;color:#f0ece4;font-family:system-ui,sans-serif;` +
+                `display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px">` +
+                `<div style="max-width:420px;text-align:center">` +
+                `<h1 style="color:#c9a227;font-size:1.3rem;margin:0 0 12px">${title}</h1>` +
+                `<p style="color:#9e9890;line-height:1.6;margin:0 0 24px">${body}</p>` +
+                `<a href="${env.SITE_URL || "https://luxurybarber80.fr"}" ` +
+                `style="color:#c9a227">Retour au site</a></div></body></html>`,
+              { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } }
+            );
+
+          let email = "";
+          try {
+            email = b64urlDecode(url.searchParams.get("e") || "");
+          } catch (e) {}
+          const tok = url.searchParams.get("t") || "";
+          if (!email || !safeEqual(tok, await unsubToken(env, email))) {
+            return page("Lien invalide", "Ce lien de désinscription n'est pas valide.");
+          }
+
+          await ensureSchema();
+          await q(
+            "insert into marketing_optout (email) values ($1) on conflict (email) do nothing",
+            [email.toLowerCase()]
+          );
+          return page(
+            "C'est fait",
+            "Vous ne recevrez plus nos actualités. Vos confirmations de rendez-vous continueront d'arriver normalement."
+          );
         }
 
         if (path === "/api/cancel") {
