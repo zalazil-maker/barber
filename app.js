@@ -213,7 +213,16 @@ async function flushPending() {
 
 async function fetchAll() {
   const res = await fetch(WORKER_URL, { method: "GET" });
-  if (!res.ok) throw new Error("fetch " + res.status);
+  if (!res.ok) {
+    // If the worker forwarded a Neon quota-exceeded error, surface it clearly
+    // so the operator knows to upgrade / wait for reset instead of hunting a bug.
+    let body = "";
+    try { body = await res.text(); } catch (e) {}
+    const quota = /compute time quota|exceeded the compute|402/i.test(body);
+    const err = new Error("fetch " + res.status);
+    err.quota = quota;
+    throw err;
+  }
   const rows = await res.json();
   state.events = rows.map((r) => ({
     id: r.id,
@@ -246,7 +255,7 @@ async function syncNow() {
     setSync("idle");
     if (!isMidEntry()) render();
   } catch (err) {
-    setSync("offline");
+    setSync(err && err.quota ? "quota" : "offline");
   } finally {
     syncing = false;
   }
@@ -265,7 +274,13 @@ function setSync(s) {
   if (badge) {
     badge.className = "sync-badge " + s;
     badge.textContent =
-      s === "syncing" ? "Syncing…" : s === "offline" ? "Offline – will retry" : "Synced";
+      s === "syncing"
+        ? "Syncing…"
+        : s === "quota"
+        ? "DB quota reached"
+        : s === "offline"
+        ? "Offline – will retry"
+        : "Synced";
   }
 }
 
@@ -632,7 +647,13 @@ function render() {
   let html = `<header>
     <h1>LX Barbershop</h1>
     <button id="sync-badge" class="sync-badge ${state.sync}" data-action="sync">${
-    state.sync === "syncing" ? "Syncing…" : state.sync === "offline" ? "Offline – will retry" : "Synced"
+    state.sync === "syncing"
+      ? "Syncing…"
+      : state.sync === "quota"
+      ? "DB quota reached"
+      : state.sync === "offline"
+      ? "Offline – will retry"
+      : "Synced"
   }</button>
   </header>`;
 
@@ -2578,7 +2599,12 @@ function handleAction(action, data) {
 rebuildData();
 render();
 syncNow();
-setInterval(syncNow, 20000);
+// Only poll while the tab is actually visible, and less often, so we don't
+// burn Neon compute quota on idle background devices.
+setInterval(() => {
+  if (document.hidden) return;
+  syncNow();
+}, 60000);
 window.addEventListener("online", syncNow);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) syncNow();

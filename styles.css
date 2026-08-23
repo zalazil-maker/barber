@@ -36,6 +36,7 @@ header h1 {
 .sync-badge.idle { background: #166534; }
 .sync-badge.syncing { background: #854d0e; }
 .sync-badge.offline { background: #7f1d1d; }
+.sync-badge.quota { background: #6b21a8; }
 .tabs {
   display: flex;
   gap: 8px;
