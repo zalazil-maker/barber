@@ -2062,6 +2062,48 @@ function renderAnalytics() {
     ${scope === "all" ? `<p>Expenses: <b>-${fmtEuroInt(expensesTotal)}</b>. House net (50% haircuts + 100% products − expenses): <b>${fmtEuroInt(cur.haircutRevenue * 0.5 + cur.products - expensesTotal)}</b>.</p>` : `<p>Acomptes already taken: <b>-${fmtEuroInt(cur.acomptes)}</b>. Pending share (50% of haircuts): <b>${fmtEuroInt(cur.haircutRevenue * 0.5 - cur.acomptes)}</b>.</p>`}
   </div>`;
 
+  // Sorties d'argent — per-barber acomptes + total dépenses. Always visible for accounting.
+  {
+    const acompteBreakdown =
+      scope === "all"
+        ? scopeBarbers.map((b) => ({
+            name: b,
+            amount: computeBucket(range.start, range.end, b).acomptes,
+          }))
+        : [{ name: scope, amount: cur.acomptes }];
+    // Guard the sum against float noise even though amounts are integer euros.
+    const totalAcomptes = acompteBreakdown.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const totalDepenses = Number(expensesTotal) || 0;
+    const totalSorties = totalAcomptes + totalDepenses;
+
+    html += `<div class="stat-card" style="margin-bottom:12px">
+      <h3>💸 Sorties d'argent</h3>
+      <div class="cmp-section-label">Acomptes</div>`;
+    for (const row of acompteBreakdown) {
+      html += `<div class="row">
+        <span class="label">${row.name}</span>
+        <span class="value acompte-val">-${fmtEuroInt(row.amount)}</span>
+      </div>`;
+    }
+    if (acompteBreakdown.length > 1) {
+      html += `<div class="row total">
+        <span class="label">Total acomptes</span>
+        <span class="value acompte-val">-${fmtEuroInt(totalAcomptes)}</span>
+      </div>`;
+    }
+    html += `
+      <div class="cmp-section-label" style="margin-top:10px">Dépenses</div>
+      <div class="row">
+        <span class="label">Total dépenses</span>
+        <span class="value expense-amt">-${fmtEuroInt(totalDepenses)}</span>
+      </div>
+      <div class="row total" style="margin-top:8px;border-top:1px solid #334155;padding-top:8px">
+        <span class="label">Total sorties</span>
+        <span class="value">-${fmtEuroInt(totalSorties)}</span>
+      </div>
+    </div>`;
+  }
+
   // Barber comparison (whoever was active in this range)
   if (scope === "all" && scopeBarbers.length >= 2) {
     const buckets = scopeBarbers.map((b) => ({
