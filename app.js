@@ -315,6 +315,19 @@ function getCurrentWeekRange() {
   now.setDate(now.getDate() + state.weekOffset * 7);
   return { start: startOfWeek(now).getTime(), end: endOfWeek(now).getTime() };
 }
+function getCurrentMonthRange() {
+  // Anchor to the month that contains the currently-viewed week's start.
+  const { start } = getCurrentWeekRange();
+  const d = new Date(start);
+  const s = new Date(d.getFullYear(), d.getMonth(), 1);
+  const e = new Date(d.getFullYear(), d.getMonth() + 1, 1);
+  return {
+    start: s.getTime(),
+    end: e.getTime(),
+    label: s.toLocaleDateString(undefined, { month: "long", year: "numeric" }),
+    monthStart: s,
+  };
+}
 function getWeekLabel() {
   const { start, end } = getCurrentWeekRange();
   const endDisplay = new Date(end - 1);
@@ -464,6 +477,287 @@ function buildWeeklyReport() {
     houseNet,
     split: SPLIT,
   };
+}
+
+function buildMonthlyReport() {
+  const range = getCurrentMonthRange();
+  const { start, end } = range;
+  const entries = state.data.entries.filter((e) => e.time >= start && e.time < end);
+  const expenses = state.data.expenses.filter((e) => e.time >= start && e.time < end);
+  const acomptes = state.data.acomptes.filter((e) => e.time >= start && e.time < end);
+  const products = state.data.products.filter((e) => e.time >= start && e.time < end);
+
+  const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
+  const cash = (arr) => arr.filter((e) => e.method === "ESP");
+  const card = (arr) => arr.filter((e) => e.method === "CB");
+
+  const haircutGross = sum(entries, (e) => e.amount);
+  const productsTotal = sum(products, (e) => e.amount);
+  const totals = {
+    customers: entries.length,
+    haircutGross,
+    productsTotal,
+    productsCount: products.length,
+    gross: haircutGross + productsTotal,
+    cash: sum(cash(entries), (e) => e.amount),
+    card: sum(card(entries), (e) => e.amount),
+    expensesTotal: sum(expenses, (e) => e.amount),
+    acomptesTotal: sum(acomptes, (e) => e.amount),
+  };
+
+  // Per-week rollup: iterate calendar weeks (Mon–Sun) touching this month,
+  // clipping each window to the month range so partial weeks report only
+  // the days that actually belong to this month.
+  const weeks = [];
+  let cursor = startOfWeek(new Date(start)).getTime();
+  while (cursor < end) {
+    const wEnd = cursor + 7 * 86400000;
+    const winStart = Math.max(cursor, start);
+    const winEnd = Math.min(wEnd, end);
+    const wE = entries.filter((e) => e.time >= winStart && e.time < winEnd);
+    const wP = products.filter((e) => e.time >= winStart && e.time < winEnd);
+    const wCash = sum(cash(wE), (e) => e.amount);
+    const wCard = sum(card(wE), (e) => e.amount);
+    const wProd = sum(wP, (e) => e.amount);
+    weeks.push({
+      startD: new Date(winStart),
+      endD: new Date(winEnd - 1),
+      customers: wE.length,
+      cash: wCash,
+      card: wCard,
+      products: wProd,
+      total: wCash + wCard + wProd,
+    });
+    cursor = wEnd;
+  }
+
+  const SPLIT = 0.5;
+  const monthBarbers = barbersForRange(start, end);
+  const barbers = {};
+  for (const b of monthBarbers) {
+    const bE = entries.filter((e) => e.barber === b);
+    const bA = acomptes.filter((e) => e.barber === b);
+    const bP = products.filter((e) => e.barber === b);
+    const haircutGrossB = sum(bE, (e) => e.amount);
+    const productsB = sum(bP, (e) => e.amount);
+    const acompteTotal = sum(bA, (e) => e.amount);
+    const shareGross = haircutGrossB * SPLIT;
+    barbers[b] = {
+      customers: bE.length,
+      haircutGross: haircutGrossB,
+      products: productsB,
+      productCount: bP.length,
+      cash: sum(cash(bE), (e) => e.amount),
+      card: sum(card(bE), (e) => e.amount),
+      coupons: bE.filter((e) => e.coupon).length,
+      rdvs: bE.filter((e) => e.rdv).length,
+      acomptes: acompteTotal,
+      shareGross,
+      shareNet: shareGross - acompteTotal,
+    };
+  }
+
+  const houseHaircutShare = totals.haircutGross * (1 - SPLIT);
+  const houseProducts = totals.productsTotal;
+  const houseGross = houseHaircutShare + houseProducts;
+  const houseNet = houseGross - totals.expensesTotal;
+
+  return {
+    startD: new Date(start),
+    endD: new Date(end - 1),
+    monthLabel: range.label,
+    totals,
+    weeks,
+    barbers,
+    barberNames: monthBarbers,
+    houseHaircutShare,
+    houseProducts,
+    houseGross,
+    houseNet,
+    split: SPLIT,
+  };
+}
+
+function generateMonthlyPDF() {
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    showToast("PDF library not loaded — connect to internet and refresh");
+    return;
+  }
+  const r = buildMonthlyReport();
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const W = 210;
+  const M = 15;
+  const money = (n) => `${(Math.round(n * 100) / 100).toFixed(2)} €`;
+  let y = M + 5;
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(20);
+  doc.text("LX Barbershop — Monthly Report", M, y);
+  y += 8;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(12);
+  doc.text(r.monthLabel, M, y);
+  y += 6;
+  doc.setFontSize(10);
+  doc.setTextColor(120);
+  doc.text(
+    `${r.startD.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}  →  ${r.endD.toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" })}`,
+    M,
+    y
+  );
+  doc.setTextColor(0);
+  y += 10;
+
+  // SUMMARY
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.text("Summary", M, y);
+  y += 7;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  const sumRows = [
+    ["Total customers (haircuts)", `${r.totals.customers}`],
+    ["Haircut revenue", money(r.totals.haircutGross)],
+    ["    Cash (ESP)", money(r.totals.cash)],
+    ["    Card (CB)", money(r.totals.card)],
+    ["Products sold", `${r.totals.productsCount}  (${money(r.totals.productsTotal)})`],
+    ["Gross revenue (haircuts + products)", money(r.totals.gross)],
+    ["Acomptes (advances to barbers)", `- ${money(r.totals.acomptesTotal)}`],
+    ["Expenses (Dépenses)", `- ${money(r.totals.expensesTotal)}`],
+    ["Net revenue", money(r.totals.gross - r.totals.expensesTotal)],
+  ];
+  for (const [k, v] of sumRows) {
+    doc.text(k, M, y);
+    doc.text(v, W - M, y, { align: "right" });
+    y += 6;
+  }
+  y += 4;
+
+  // PER WEEK
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.text("Per week", M, y);
+  y += 7;
+  doc.setFontSize(10);
+  const cols = { wk: M, cust: M + 60, cash: M + 92, card: M + 125, prod: M + 155, total: M + 175 };
+  doc.text("Week", cols.wk, y);
+  doc.text("Cust.", cols.cust, y);
+  doc.text("Cash", cols.cash, y);
+  doc.text("Card", cols.card, y);
+  doc.text("Prod.", cols.prod, y);
+  doc.text("Total", cols.total, y);
+  y += 1.5;
+  doc.line(M, y, W - M, y);
+  y += 4.5;
+  doc.setFont("helvetica", "normal");
+  for (const w of r.weeks) {
+    const label = `${w.startD.toLocaleDateString(undefined, { day: "2-digit", month: "short" })} – ${w.endD.toLocaleDateString(undefined, { day: "2-digit", month: "short" })}`;
+    doc.text(label, cols.wk, y);
+    doc.text(`${w.customers}`, cols.cust, y);
+    doc.text(money(w.cash), cols.cash, y);
+    doc.text(money(w.card), cols.card, y);
+    doc.text(money(w.products), cols.prod, y);
+    doc.text(money(w.total), cols.total, y);
+    y += 6;
+  }
+  y += 4;
+
+  if (y > 220) { doc.addPage(); y = M; }
+
+  // PER BARBER
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.text("Per barber", M, y);
+  y += 7;
+  doc.setFontSize(11);
+  for (const b of r.barberNames) {
+    const s = r.barbers[b];
+    doc.setFont("helvetica", "bold");
+    doc.text(b, M, y);
+    y += 6;
+    doc.setFont("helvetica", "normal");
+    const rows = [
+      ["Customers", `${s.customers}`],
+      ["Haircut revenue (their share base)", money(s.haircutGross)],
+      ["    Cash", money(s.cash)],
+      ["    Card", money(s.card)],
+      ["Products sold (100% to house)", `${s.productCount}  (${money(s.products)})`],
+      ["Coupons (−20%) used", `${s.coupons}`],
+      ["RDV (−10%) used", `${s.rdvs}`],
+      ["Acomptes taken during the month", `- ${money(s.acomptes)}`],
+    ];
+    for (const [k, v] of rows) {
+      doc.text(k, M + 5, y);
+      doc.text(v, W - M, y, { align: "right" });
+      y += 5.5;
+    }
+    y += 3;
+    if (y > 250) { doc.addPage(); y = M; }
+  }
+
+  if (y > 220) { doc.addPage(); y = M; }
+
+  // MONTH SPLIT
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(14);
+  doc.text(
+    `Month payout — ${Math.round(r.split * 100)}% / ${Math.round((1 - r.split) * 100)}% on haircuts, products 100% house`,
+    M,
+    y
+  );
+  y += 7;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(11);
+  for (const b of r.barberNames) {
+    const s = r.barbers[b];
+    doc.text(`${b} share (${Math.round(r.split * 100)}% of ${money(s.haircutGross)} haircuts):`, M, y);
+    doc.text(money(s.shareGross), W - M, y, { align: "right" });
+    y += 5.5;
+    doc.text(`    Less acomptes already taken:`, M, y);
+    doc.text(`- ${money(s.acomptes)}`, W - M, y, { align: "right" });
+    y += 5.5;
+    doc.setFont("helvetica", "bold");
+    doc.text(`    End-of-month payout to ${b}:`, M, y);
+    doc.text(money(s.shareNet), W - M, y, { align: "right" });
+    doc.setFont("helvetica", "normal");
+    y += 7;
+  }
+  doc.line(M, y, W - M, y);
+  y += 6;
+  doc.setFont("helvetica", "bold");
+  doc.text("House income:", M, y);
+  y += 6;
+  doc.setFont("helvetica", "normal");
+  doc.text(`    ${Math.round((1 - r.split) * 100)}% of haircuts:`, M, y);
+  doc.text(money(r.houseHaircutShare), W - M, y, { align: "right" });
+  y += 5.5;
+  doc.text("    Products (100% to house):", M, y);
+  doc.text(money(r.houseProducts), W - M, y, { align: "right" });
+  y += 5.5;
+  doc.text("    House gross subtotal:", M, y);
+  doc.text(money(r.houseGross), W - M, y, { align: "right" });
+  y += 6;
+  doc.text("Expenses (house absorbs):", M, y);
+  doc.text(`- ${money(r.totals.expensesTotal)}`, W - M, y, { align: "right" });
+  y += 6;
+  doc.setFont("helvetica", "bold");
+  doc.text("House net (yours):", M, y);
+  doc.text(money(r.houseNet), W - M, y, { align: "right" });
+  y += 12;
+
+  doc.setFontSize(9);
+  doc.setFont("helvetica", "normal");
+  doc.setTextColor(120);
+  doc.text(
+    `Generated ${new Date().toLocaleString()} · LX Barbershop App`,
+    M,
+    287
+  );
+
+  const fname = `Barbershop-Month-${r.startD.toISOString().slice(0, 7)}.pdf`;
+  doc.save(fname);
+  showToast("PDF saved: " + fname);
 }
 
 function generateWeeklyPDF() {
@@ -1529,7 +1823,10 @@ function renderStats() {
       <button data-action="week-next" ${state.weekOffset >= 0 ? "disabled style='opacity:0.4'" : ""}>Next &rarr;</button>
     </div>
     ${dayPillsHtml}
-    <button class="pdf-btn" data-action="download-pdf">📄 Download weekly PDF report</button>
+    <div class="pdf-btn-row">
+      <button class="pdf-btn" data-action="download-pdf">📄 Weekly PDF</button>
+      <button class="pdf-btn pdf-btn-alt" data-action="download-monthly-pdf">📅 Monthly PDF</button>
+    </div>
     <div class="summary">`;
 
   for (const b of displayBarbers) {
@@ -2312,6 +2609,9 @@ function handleAction(action, data) {
     }
     case "download-pdf":
       generateWeeklyPDF();
+      break;
+    case "download-monthly-pdf":
+      generateMonthlyPDF();
       break;
     case "set-analytics-period":
       state.analytics.period = data.value;

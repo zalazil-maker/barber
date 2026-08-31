@@ -599,18 +599,25 @@ header h1 {
 .cmp-fill.sami { background: linear-gradient(90deg, #1e3a8a, #3b82f6); }
 .cmp-fill.amine { background: linear-gradient(90deg, #831843, #ec4899); }
 .cmp-val { text-align: right; font-weight: 600; font-size: 14px; }
+.pdf-btn-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
 .pdf-btn {
   width: 100%;
-  padding: 12px;
-  margin-bottom: 14px;
+  padding: 12px 8px;
   background: linear-gradient(135deg, #1e3a8a, #3b82f6);
   color: #fff;
   border: none;
   border-radius: 12px;
-  font-size: 15px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
 }
+.pdf-btn:active { transform: scale(0.98); }
+.pdf-btn-alt { background: linear-gradient(135deg, #4c1d95, #7c3aed); }
 .pdf-btn:active { transform: scale(0.98); }
 .deleted-history { margin-top: 12px; border: 1px dashed #475569; }
 .deleted-history h3 { color: #ef4444; }
