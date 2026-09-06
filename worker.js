@@ -549,15 +549,12 @@ export default {
          )`
       );
 
-      const prodCount = await q("select count(*)::int as n from products");
-      if (Number((prodCount.rows || [{}])[0]?.n || 0) === 0) {
-        for (const p of DEFAULT_PRODUCTS) {
-          await q(
-            `insert into products (id,label,brand,description,image,price,sort)
-             values ($1,$2,$3,$4,$5,$6,$7) on conflict (id) do nothing`,
-            [p.id, p.label, p.brand, p.description, p.image, p.price ?? null, p.sort]
-          );
-        }
+      for (const p of DEFAULT_PRODUCTS) {
+        await q(
+          `insert into products (id,label,brand,description,image,price,sort)
+           values ($1,$2,$3,$4,$5,$6,$7) on conflict (id) do nothing`,
+          [p.id, p.label, p.brand, p.description, p.image, p.price ?? null, p.sort]
+        );
       }
 
       await q(
@@ -572,19 +569,21 @@ export default {
          )`
       );
 
-      const svcCount = await q("select count(*)::int as n from services");
-      if (Number((svcCount.rows || [{}])[0]?.n || 0) === 0) {
-        let i = 0;
-        for (const s of DEFAULT_SERVICES) {
-          await q(
-            `insert into services (id,label,price,planity,duration,icon,description,sort)
-             values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (id) do nothing`,
-            [s.id, s.label, s.price, s.planity, s.duration, s.icon, s.description, i++]
-          );
-        }
+      // Insert any default service the database is missing. `on conflict do
+       // nothing` keeps existing edits — this is only a top-up, so a price
+       // the owner changed via /admin is not clobbered. Runs every startup
+       // so a new default added later actually lands.
+      let i = 0;
+      for (const s of DEFAULT_SERVICES) {
+        await q(
+          `insert into services (id,label,price,planity,duration,icon,description,sort)
+           values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (id) do nothing`,
+          [s.id, s.label, s.price, s.planity, s.duration, s.icon, s.description, i++]
+        );
       }
-      const barbCount = await q("select count(*)::int as n from barbers");
-      if (Number((barbCount.rows || [{}])[0]?.n || 0) === 0) {
+      // Same top-up pattern as services: insert any missing default without
+       // overwriting an existing row.
+      {
         let i = 0;
         for (const b of DEFAULT_BARBERS) {
           await q(
