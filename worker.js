@@ -31,19 +31,29 @@ const DEFAULT_BARBERS = ["Momo", "Amine"];
 // only get by booking here. `planity` is the regular Planity/walk-in rate,
 // shown struck through so the saving is visible. Omit `planity` for services
 // with no comparable Planity rate.
+// `image` is a photograph shown on the tarif card. Paths are served by
+// the website (public/cuts/ for the coupes photos, public/tarifs/ for
+// the treatment shot).
 const DEFAULT_SERVICES = [
   { id: "cheveux", label: "Cheveux", price: 18.0, planity: 20.0, duration: 30, icon: "ico-ciseaux",
+    image: "/cuts/classique.jpg",
     description: "Coupe homme soignée, adaptée à votre style. Dégradé, classique ou moderne — le résultat est toujours net." },
   { id: "barbe", label: "Barbe", price: 9.99, planity: 12.0, duration: 30, icon: "ico-rasoir",
+    image: "/cuts/barbe.jpg",
     description: "Taille et contours de barbe à la tondeuse et au rasoir, finition serviette chaude. Net, précis, rapide." },
   { id: "both", label: "Cheveux + Barbe", price: 23.99, planity: 26.0, duration: 30, icon: "ico-poteau",
+    image: "/cuts/taper.jpg",
     description: "Le combo complet — coupe homme et taille de barbe soignée pour un look parfaitement abouti de la tête aux pieds." },
   { id: "traitement_complet", label: "Le traitement complet !", price: 32.99, planity: null, duration: 60, icon: "ico-poteau",
+    image: "/tarifs/traitement.jpg",
     description: "Coupe, barbe, shampooing et soins visage — pensé pour les grandes occasions : mariage, remise de diplôme, vacances, ou simplement pour prendre soin de vous.",
     needsSkinType: true },
-  { id: "enfant", label: "Enfant", price: 12.0, planity: null, duration: 30, icon: "ico-enfant",
-    description: "Coupe pour les petits dans une ambiance détendue. Pour que vos enfants repartent contents et bien coiffés." },
 ];
+
+// Services that were seeded on an earlier deploy and are no longer offered.
+// Soft-deleted on startup so history (bookings, invoices) still references
+// them without them showing up in the tarif list or the booking form.
+const RETIRED_SERVICE_IDS = ["enfant"];
 
 // Products sold at the shop. Prices are optional — the panel lets the owner
 // set them later. `image` is a path served by the website (public/products/).
@@ -516,6 +526,7 @@ export default {
          )`
       );
       await q("alter table services add column if not exists description text");
+      await q("alter table services add column if not exists image text");
       // barbers.id holds the name, because events.barber and bookings.barber
       // already store names — keeping them equal avoids migrating history.
       await q(
@@ -576,10 +587,25 @@ export default {
       let i = 0;
       for (const s of DEFAULT_SERVICES) {
         await q(
-          `insert into services (id,label,price,planity,duration,icon,description,sort)
-           values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (id) do nothing`,
-          [s.id, s.label, s.price, s.planity, s.duration, s.icon, s.description, i++]
+          `insert into services (id,label,price,planity,duration,icon,description,image,sort)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict (id) do nothing`,
+          [s.id, s.label, s.price, s.planity, s.duration, s.icon, s.description, s.image || null, i++]
         );
+      }
+      // Backfill the image on rows seeded before that column existed — only
+      // when the current value is null, so a photo set from /admin is kept.
+      for (const s of DEFAULT_SERVICES) {
+        if (s.image) {
+          await q(
+            "update services set image = $2 where id = $1 and image is null",
+            [s.id, s.image]
+          );
+        }
+      }
+      // Retire services that used to be defaults but aren't offered anymore.
+      // Soft-delete so past bookings still resolve their label.
+      for (const id of RETIRED_SERVICE_IDS) {
+        await q("update services set active=false where id=$1 and active=true", [id]);
       }
       // Same top-up pattern as services: insert any missing default without
        // overwriting an existing row.
@@ -636,7 +662,7 @@ export default {
     async function loadConfig() {
       await ensureSchema();
       const [svc, barb, set, prod] = await Promise.all([
-        q("select id,label,price,planity,duration,icon,description,sort from services where active order by sort, label"),
+        q("select id,label,price,planity,duration,icon,description,image,sort from services where active order by sort, label"),
         q("select id,name,photo_key,sort from barbers where active order by sort, name"),
         q("select key,value from settings"),
         q("select id,label,brand,description,image,price,sort from products where active order by sort, label"),
@@ -650,6 +676,7 @@ export default {
           planity: r.planity == null ? null : Number(r.planity),
           duration: Number(r.duration) || DEFAULT_SLOT_MIN,
           icon: r.icon || null,
+          image: r.image || null,
           desc: r.description || "",
         };
       }
@@ -1069,7 +1096,7 @@ export default {
           // Everything the panel needs to render, including hidden entries.
           if (body.op === "state") {
             const [svc, barb, med, set, prod] = await Promise.all([
-              q("select id,label,price,planity,duration,icon,description,sort,active from services order by sort, label"),
+              q("select id,label,price,planity,duration,icon,description,image,sort,active from services order by sort, label"),
               q("select id,name,photo_key,sort,active from barbers order by sort, name"),
               q("select id,kind,r2_key,caption,sort,created_at from media order by sort, created_at desc"),
               q("select key,value from settings"),
@@ -1174,14 +1201,16 @@ export default {
             }
             const duration = Number(s.duration) || DEFAULT_SLOT_MIN;
             await q(
-              `insert into services (id,label,price,planity,duration,icon,description,sort,active)
-               values ($1,$2,$3,$4,$5,$6,$7,$8,true)
+              `insert into services (id,label,price,planity,duration,icon,description,image,sort,active)
+               values ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
                on conflict (id) do update set
                  label=excluded.label, price=excluded.price, planity=excluded.planity,
                  duration=excluded.duration, icon=excluded.icon,
-                 description=excluded.description, sort=excluded.sort, active=true`,
+                 description=excluded.description, image=excluded.image,
+                 sort=excluded.sort, active=true`,
               [id, label, price, planity, duration, cleanText(s.icon, 40) || null,
-               cleanText(s.description, 300) || null, Number(s.sort) || 0]
+               cleanText(s.description, 300) || null, cleanText(s.image, 200) || null,
+               Number(s.sort) || 0]
             );
             return json({ ok: true, id });
           }
