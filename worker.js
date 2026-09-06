@@ -38,8 +38,40 @@ const DEFAULT_SERVICES = [
     description: "Taille et contours de barbe à la tondeuse et au rasoir, finition serviette chaude. Net, précis, rapide." },
   { id: "both", label: "Cheveux + Barbe", price: 23.99, planity: 26.0, duration: 30, icon: "ico-poteau",
     description: "Le combo complet — coupe homme et taille de barbe soignée pour un look parfaitement abouti de la tête aux pieds." },
+  { id: "traitement_complet", label: "Le traitement complet !", price: 32.99, planity: null, duration: 60, icon: "ico-poteau",
+    description: "Coupe, barbe, shampooing et soins visage — pensé pour les grandes occasions : mariage, remise de diplôme, vacances, ou simplement pour prendre soin de vous.",
+    needsSkinType: true },
   { id: "enfant", label: "Enfant", price: 12.0, planity: null, duration: 30, icon: "ico-enfant",
     description: "Coupe pour les petits dans une ambiance détendue. Pour que vos enfants repartent contents et bien coiffés." },
+];
+
+// Products sold at the shop. Prices are optional — the panel lets the owner
+// set them later. `image` is a path served by the website (public/products/).
+const DEFAULT_PRODUCTS = [
+  { id: "hydralift", label: "Hydralift Hyaluron SPF15", brand: "Revuele",
+    description: "Crème-fluide hydratante à l'acide hyaluronique — lisse les rides et protège du soleil au quotidien.",
+    image: "/products/hydralift.jpg", sort: 10 },
+  { id: "vitamine-c", label: "Sérum Vitamine C 15%", brand: "Revuele",
+    description: "Éclaircit le teint et uniformise la peau pour un éclat visible dès les premiers jours.",
+    image: "/products/vitamine-c.jpg", sort: 20 },
+  { id: "niacinamide-serum", label: "Sérum Niacinamide 15%", brand: "Revuele",
+    description: "Resserre les pores et équilibre la peau — idéal pour les peaux mixtes à grasses.",
+    image: "/products/niacinamide-serum.jpg", sort: 30 },
+  { id: "glycolique", label: "Peeling Acide Glycolique", brand: "Revuele",
+    description: "Exfolie en douceur et affine le grain de peau — conçu pour les peaux à imperfections.",
+    image: "/products/glycolique.jpg", sort: 40 },
+  { id: "niacinamide-zinc", label: "Niacinamide + Zinc 3-en-1", brand: "The Doctor",
+    description: "Contrôle le sébum et unifie le teint — soin visage jour, nuit et contour des yeux.",
+    image: "/products/niacinamide-zinc.jpg", sort: 50 },
+  { id: "argan", label: "Crème de nuit Argan Oil", brand: "Revuele",
+    description: "Régénère la peau pendant la nuit avec l'huile d'argan — anti-rides et nourrissant pour peaux sèches.",
+    image: "/products/argan.jpg", sort: 60 },
+  { id: "spf50", label: "Sunprotect SPF 50+", brand: "Revuele",
+    description: "Protection très haute contre les UVA et UVB, fini sec — spécialement formulé pour peaux mixtes à grasses.",
+    image: "/products/spf50.jpg", sort: 70 },
+  { id: "masque-noir", label: "Black Mask Peel-Off", brand: "Revuele",
+    description: "Masque au charbon actif qui décolle les points noirs et purifie les pores en profondeur.",
+    image: "/products/masque-noir.jpg", sort: 80 },
 ];
 
 const DEFAULT_SLOT_MIN = 30; // minutes per bookable slot
@@ -197,16 +229,17 @@ function validBooking(body, cfg) {
   if (!email) return { error: "Merci d'indiquer votre email pour recevoir la confirmation." };
   if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)) return { error: "Email invalide." };
 
-  return {
-    service,
-    barber,
-    date: body.date,
-    slot,
-    name,
-    phone,
-    email,
-    note: cleanText(body.note, 300),
-  };
+  // For services that ask for it (see `needsSkinType` in DEFAULT_SERVICES),
+  // the customer's answer is prepended to the note so the barber sees it in
+  // one place in the RDV tab.
+  let note = cleanText(body.note, 300);
+  const skinType = cleanText(body.skinType, 60);
+  const svcDef = DEFAULT_SERVICES.find((s) => s.id === service);
+  if (skinType && svcDef && svcDef.needsSkinType) {
+    note = `Peau : ${skinType}${note ? " — " + note : ""}`.slice(0, 300);
+  }
+
+  return { service, barber, date: body.date, slot, name, phone, email, note };
 }
 
 // ── Web Push (optional) ─────────────────────────────────────────────────────
@@ -500,6 +533,33 @@ export default {
            value text not null
          )`
       );
+      // Products sold at the shop. Prices are optional; when null the card
+       // just shows the product without any "€" line.
+      await q(
+        `create table if not exists products (
+           id text primary key,
+           label text not null,
+           brand text,
+           description text,
+           image text,
+           price numeric(6,2),
+           sort int not null default 0,
+           active boolean not null default true,
+           created_at timestamptz not null default now()
+         )`
+      );
+
+      const prodCount = await q("select count(*)::int as n from products");
+      if (Number((prodCount.rows || [{}])[0]?.n || 0) === 0) {
+        for (const p of DEFAULT_PRODUCTS) {
+          await q(
+            `insert into products (id,label,brand,description,image,price,sort)
+             values ($1,$2,$3,$4,$5,$6,$7) on conflict (id) do nothing`,
+            [p.id, p.label, p.brand, p.description, p.image, p.price ?? null, p.sort]
+          );
+        }
+      }
+
       await q(
         `create table if not exists media (
            id text primary key,
@@ -576,10 +636,11 @@ export default {
     // edit in /admin takes effect on the next request.
     async function loadConfig() {
       await ensureSchema();
-      const [svc, barb, set] = await Promise.all([
+      const [svc, barb, set, prod] = await Promise.all([
         q("select id,label,price,planity,duration,icon,description,sort from services where active order by sort, label"),
         q("select id,name,photo_key,sort from barbers where active order by sort, name"),
         q("select key,value from settings"),
+        q("select id,label,brand,description,image,price,sort from products where active order by sort, label"),
       ]);
 
       const services = {};
@@ -609,10 +670,29 @@ export default {
         } catch (e) {}
       }
 
+      // Which services want an extra "skin type" field on the booking form.
+      // Kept alongside the service so the site can render the field without
+      // needing a hardcoded id.
+      const skinTypeServices = DEFAULT_SERVICES
+        .filter((s) => s.needsSkinType)
+        .map((s) => s.id);
+
+      const products = (prod.rows || []).map((r) => ({
+        id: r.id,
+        label: r.label,
+        brand: r.brand || null,
+        description: r.description || "",
+        image: r.image || null,
+        price: r.price == null ? null : Number(r.price),
+        sort: Number(r.sort),
+      }));
+
       return {
         services,
         barbers,
         barberInfo,
+        products,
+        skinTypeServices,
         hours: settings.hours || DEFAULT_HOURS,
         slotMinutes: Number(settings.slotMinutes) || DEFAULT_SLOT_MIN,
       };
@@ -648,6 +728,8 @@ export default {
             barbers: cfg.barbers,
             barberInfo: cfg.barberInfo,
             services: cfg.services,
+            products: cfg.products,
+            skinTypeServices: cfg.skinTypeServices,
             slotMinutes: cfg.slotMinutes,
             maxDaysAhead: MAX_DAYS_AHEAD,
             hours: cfg.hours,
@@ -987,11 +1069,12 @@ export default {
 
           // Everything the panel needs to render, including hidden entries.
           if (body.op === "state") {
-            const [svc, barb, med, set] = await Promise.all([
+            const [svc, barb, med, set, prod] = await Promise.all([
               q("select id,label,price,planity,duration,icon,description,sort,active from services order by sort, label"),
               q("select id,name,photo_key,sort,active from barbers order by sort, name"),
               q("select id,kind,r2_key,caption,sort,created_at from media order by sort, created_at desc"),
               q("select key,value from settings"),
+              q("select id,label,brand,description,image,price,sort,active from products order by sort, label"),
             ]);
             const settings = {};
             for (const r of set.rows || []) {
@@ -1021,11 +1104,57 @@ export default {
                 caption: m.caption,
                 sort: Number(m.sort),
               })),
+              products: (prod.rows || []).map((r) => ({
+                id: r.id,
+                label: r.label,
+                brand: r.brand || "",
+                description: r.description || "",
+                image: r.image || null,
+                price: r.price == null ? null : Number(r.price),
+                sort: Number(r.sort),
+                active: r.active === true || r.active === "t",
+              })),
               hours: settings.hours || DEFAULT_HOURS,
               slotMinutes: Number(settings.slotMinutes) || DEFAULT_SLOT_MIN,
               storage: !!env.MEDIA,
               email: !!env.RESEND_API_KEY,
             });
+          }
+
+          // Products ------------------------------------------------------
+          if (body.op === "product-save") {
+            const p = body.product || {};
+            const id = cleanText(p.id, 40).toLowerCase().replace(/[^a-z0-9_-]/g, "");
+            if (!id) return json({ error: "Identifiant de produit invalide." }, 400);
+            const label = cleanText(p.label, 80);
+            if (!label) return json({ error: "Le nom du produit est obligatoire." }, 400);
+            const price =
+              p.price === "" || p.price == null ? null : Number(p.price);
+            if (price != null && (!Number.isFinite(price) || price < 0 || price > 999)) {
+              return json({ error: "Prix invalide." }, 400);
+            }
+            await q(
+              `insert into products (id,label,brand,description,image,price,sort,active)
+               values ($1,$2,$3,$4,$5,$6,$7,true)
+               on conflict (id) do update set
+                 label=excluded.label, brand=excluded.brand,
+                 description=excluded.description, image=excluded.image,
+                 price=excluded.price, sort=excluded.sort, active=true`,
+              [
+                id, label,
+                cleanText(p.brand, 40) || null,
+                cleanText(p.description, 300) || null,
+                cleanText(p.image, 200) || null,
+                price,
+                Number(p.sort) || 0,
+              ]
+            );
+            return json({ ok: true, id });
+          }
+
+          if (body.op === "product-delete") {
+            await q("update products set active=false where id=$1", [String(body.id || "")]);
+            return json({ ok: true });
           }
 
           // Services ------------------------------------------------------
