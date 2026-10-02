@@ -2941,12 +2941,19 @@ function handleAction(action, data) {
 rebuildData();
 render();
 syncNow();
-// Only poll while the tab is actually visible, and less often, so we don't
-// burn Neon compute quota on idle background devices.
+// Keep Neon compute quota minimal:
+//  * Only poll when the tab is actually visible.
+//  * Skip polling on the Register tab (it shows no shared data; barbers mid-sale
+//    don't need remote updates, and every save already triggers an immediate sync).
+//  * Interval raised from 60s -> 300s. Visibility change, tab switch to Stats/
+//    Caisse/Analytics, mutations, and the "online" event all still trigger
+//    syncs — this interval only matters for a device that's been sitting on
+//    Stats/Analytics without moving.
 setInterval(() => {
   if (document.hidden) return;
+  if (state.tab === "register") return;
   syncNow();
-}, 60000);
+}, 300000);
 window.addEventListener("online", syncNow);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) syncNow();
