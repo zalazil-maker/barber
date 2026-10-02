@@ -792,6 +792,26 @@ header h1 {
 .rdv-btn.primary { background: #166534; }
 .rdv-btn.danger { background: #7f1d1d; }
 .rdv-btn.wide { width: 100%; margin-top: 16px; padding: 13px; font-size: 15px; }
+.rdv-btn:disabled { opacity: 0.45; cursor: default; transform: none; }
+
+/* Email campaign (RDV tab) */
+.camp-box {
+  background: #1e293b;
+  border-radius: 14px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.camp-hint { margin: 0; font-size: 13px; line-height: 1.45; }
+.camp-field { width: 100%; box-sizing: border-box; background: #0f172a; font-size: 15px; }
+.camp-text { resize: vertical; min-height: 180px; line-height: 1.45; font-family: inherit; }
+.camp-row { display: flex; gap: 8px; }
+.camp-row .rdv-key-input { background: #0f172a; font-size: 15px; padding: 12px; min-width: 0; }
+.camp-row .rdv-btn { flex: 1; width: auto; padding: 12px; font-size: 14px; }
+.camp-row input + .rdv-btn { flex: 0 0 auto; }
+.camp-info { font-size: 13px; color: #cbd5e1; min-height: 1em; }
+.camp-progress { font-size: 14px; color: #86efac; font-weight: 600; }
 
 .rdv-section-title {
   font-size: 13px;

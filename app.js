@@ -21,6 +21,41 @@ const PENDING_KEY = "barbershop_pending_v1";
 // initialising — a const declared later is still in the temporal dead zone,
 // and the ReferenceError would be swallowed by that function's try/catch.
 const ADMIN_KEY_STORE = "barbershop_admin_key_v1";
+const CAMPAIGN_DRAFT_KEY = "barbershop_campaign_draft_v1";
+
+// Starting text for the email campaign in the RDV tab. Edited on screen, and
+// the edited version is kept on the device until it is sent.
+const CAMPAIGN_DEFAULT = {
+  subject: "Nouveau chez Luxury Barber : un soin visage offert à chaque rendez-vous",
+  message: [
+    "Bonne nouvelle : désormais, chaque rendez-vous chez Luxury Barber s'accompagne d'un soin visage offert.",
+    "",
+    "En plus de votre coupe ou de votre barbe, repartez avec une peau nette et reposée — sans supplément.",
+    "",
+    "Réservez votre prochain passage en ligne : https://luxurybarber80.fr",
+    "",
+    "À très bientôt,",
+    "L'équipe Luxury Barber",
+    "11 rue Duméril, 80000 Amiens",
+  ].join("\n"),
+};
+
+function loadCampaignDraft() {
+  try {
+    const d = JSON.parse(localStorage.getItem(CAMPAIGN_DRAFT_KEY) || "null");
+    if (d && typeof d.subject === "string" && typeof d.message === "string") return d;
+  } catch (e) {}
+  return { ...CAMPAIGN_DEFAULT, testTo: "" };
+}
+function saveCampaignDraft() {
+  const c = state.campaign;
+  try {
+    localStorage.setItem(
+      CAMPAIGN_DRAFT_KEY,
+      JSON.stringify({ subject: c.subject, message: c.message, testTo: c.testTo })
+    );
+  } catch (e) {}
+}
 
 const state = {
   view: "home",
@@ -45,6 +80,13 @@ const state = {
     loadedFor: null,
     push: "unknown", // unknown | on | off | denied | unsupported
     pushBusy: false,
+  },
+  campaign: {
+    ...loadCampaignDraft(),
+    preview: null, // counts from the worker for the current text
+    busy: false,
+    progress: "",
+    error: "",
   },
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
@@ -261,7 +303,13 @@ async function syncNow() {
   }
 }
 
+// Background syncs re-draw the screen; never do that while someone is typing
+// in a text field, or the keyboard closes and the cursor jumps.
+const TYPING_FIELDS = ["camp-subject", "camp-message", "camp-test-to", "rdv-key-input"];
+
 function isMidEntry() {
+  const ae = typeof document !== "undefined" ? document.activeElement : null;
+  if (ae && TYPING_FIELDS.includes(ae.id)) return true;
   return (
     state.tab === "register" &&
     (state.view === "amount" || state.view === "payment" || state.view === "expense-amount")
@@ -1343,6 +1391,177 @@ function renderPushRow() {
     <div class="rdv-pushrow">${inner}</div>`;
 }
 
+// ── Email campaign ─────────────────────────────────────────────────────────
+// Sends one email to every customer who booked online, through the Worker.
+// The Worker excludes unsubscribed addresses, adds the unsubscribe link and
+// remembers who already got this exact text, so pressing Envoyer again after
+// an interruption only reaches the ones still missing.
+function campaignSendLabel(p) {
+  return p && p.remaining > 0
+    ? `Envoyer à ${p.remaining} client${p.remaining > 1 ? "s" : ""}`
+    : "Envoyer";
+}
+
+function campaignInfo(p) {
+  if (!p) return "";
+  const parts = [`${p.remaining} à contacter`];
+  if (p.sent) parts.push(`${p.sent} déjà envoyé${p.sent > 1 ? "s" : ""}`);
+  if (p.optedout) parts.push(`${p.optedout} désinscrit${p.optedout > 1 ? "s" : ""} exclu${p.optedout > 1 ? "s" : ""}`);
+  let s = parts.join(" · ");
+  if (!p.enabled) s += " — l'envoi d'emails n'est pas configuré sur le Worker.";
+  return s;
+}
+
+function renderCampaign() {
+  const c = state.campaign;
+  const p = c.preview;
+  const canSend = !c.busy && p && p.enabled && p.remaining > 0;
+  return `<div class="rdv-section-title">Campagne email</div>
+    <div class="camp-box">
+      <p class="rdv-hint camp-hint">Envoyé une seule fois à chaque client ayant réservé en ligne.
+        Les désinscrits sont exclus et chaque email contient un lien de désinscription.
+        « Bonjour {prénom}, » est ajouté automatiquement.</p>
+      <input id="camp-subject" class="rdv-key-input camp-field" maxlength="150"
+        placeholder="Objet de l'email" value="${esc(c.subject)}">
+      <textarea id="camp-message" class="rdv-key-input camp-field camp-text" maxlength="5000"
+        rows="10" placeholder="Message">${esc(c.message)}</textarea>
+      <div class="camp-row">
+        <input id="camp-test-to" class="rdv-key-input" type="email" inputmode="email"
+          placeholder="Votre email, pour un test" value="${esc(c.testTo || "")}">
+        <button class="rdv-btn" data-action="camp-test" ${c.busy ? "disabled" : ""}>Test</button>
+      </div>
+      <div class="camp-row">
+        <button class="rdv-btn" data-action="camp-preview" ${c.busy ? "disabled" : ""}>Vérifier</button>
+        <button class="rdv-btn primary" id="camp-send-btn" data-action="camp-send"
+          ${canSend ? "" : "disabled"}>${campaignSendLabel(p)}</button>
+      </div>
+      <div class="camp-info" id="camp-info">${esc(campaignInfo(p))}</div>
+      ${c.progress ? `<div class="camp-progress">${esc(c.progress)}</div>` : ""}
+      ${c.error ? `<div class="rdv-error">${esc(c.error)}</div>` : ""}
+    </div>`;
+}
+
+// Text fields update state directly, without re-drawing the screen, so the
+// keyboard stays open. Any edit makes a different campaign, so the counts
+// shown for the old text are cleared until Vérifier is pressed again.
+function attachCampaignInputs() {
+  const bind = (id, field) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener("input", () => {
+      const c = state.campaign;
+      c[field] = el.value;
+      saveCampaignDraft();
+      if (field === "testTo" || !c.preview) return;
+      c.preview = null;
+      const btn = document.getElementById("camp-send-btn");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = campaignSendLabel(null);
+      }
+      const info = document.getElementById("camp-info");
+      if (info) info.textContent = "Texte modifié — appuyez sur Vérifier.";
+    });
+  };
+  bind("camp-subject", "subject");
+  bind("camp-message", "message");
+  bind("camp-test-to", "testTo");
+}
+
+async function campaignApi(op, extra = {}) {
+  const c = state.campaign;
+  const res = await fetch(`${WORKER_URL}/api/admin/campaign`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      op,
+      key: state.rdvTab.key,
+      subject: c.subject,
+      message: c.message,
+      ...extra,
+    }),
+  });
+  let j = {};
+  try {
+    j = await res.json();
+  } catch (e) {}
+  if (!res.ok) throw new Error(j.error || "Erreur " + res.status);
+  return j;
+}
+
+async function campaignPreview() {
+  const c = state.campaign;
+  c.busy = true;
+  c.error = "";
+  c.progress = "";
+  render();
+  try {
+    c.preview = await campaignApi("preview");
+  } catch (err) {
+    c.error = String(err.message || err);
+  } finally {
+    c.busy = false;
+    render();
+  }
+}
+
+async function campaignTest() {
+  const c = state.campaign;
+  const to = String(c.testTo || "").trim();
+  if (!to) {
+    showToast("Indiquez votre email pour le test");
+    return;
+  }
+  c.busy = true;
+  c.error = "";
+  render();
+  try {
+    await campaignApi("test", { to });
+    showToast("Email de test envoyé à " + to);
+  } catch (err) {
+    c.error = String(err.message || err);
+  } finally {
+    c.busy = false;
+    render();
+  }
+}
+
+async function campaignSend() {
+  const c = state.campaign;
+  const p = c.preview;
+  if (!p || !p.remaining) return;
+  const ok = confirm(
+    `Envoyer « ${c.subject} » à ${p.remaining} client${p.remaining > 1 ? "s" : ""} ?\n\n` +
+      `Un email envoyé ne peut pas être rappelé.`
+  );
+  if (!ok) return;
+
+  c.busy = true;
+  c.error = "";
+  const target = p.remaining;
+  let done = 0;
+  c.progress = `Envoi en cours… 0 / ${target}`;
+  render();
+  try {
+    // The Worker sends one batch per call; keep calling until nobody is left.
+    for (let guard = 0; guard < 200; guard++) {
+      const j = await campaignApi("send");
+      done += j.sentNow || 0;
+      c.preview = j;
+      c.progress = `Envoi en cours… ${done} / ${target}`;
+      render();
+      if (!j.sentNow || j.remaining === 0) break;
+    }
+    c.progress = `✓ Campagne envoyée à ${done} client${done > 1 ? "s" : ""}.`;
+  } catch (err) {
+    c.error = String(err.message || err);
+    c.progress = done ? `${done} envoyé${done > 1 ? "s" : ""} avant l'interruption.` : "";
+  } finally {
+    c.busy = false;
+    render();
+  }
+}
+
 function renderRDV() {
   const t = state.rdvTab;
 
@@ -1449,6 +1668,7 @@ function renderRDV() {
     html += `</div>`;
 
     html += renderPushRow();
+    html += renderCampaign();
     html += `<button class="rdv-btn wide" data-action="rdv-refresh">Rafraîchir</button>`;
   }
 
@@ -2514,6 +2734,7 @@ function attachHandlers() {
   }
 
   if (state.tab === "caisse") attachCaisseInputs();
+  if (state.tab === "rdv") attachCampaignInputs();
 }
 
 function handleAction(action, data) {
@@ -2531,6 +2752,15 @@ function handleAction(action, data) {
       loadRDV(true);
       break;
     }
+    case "camp-preview":
+      campaignPreview();
+      break;
+    case "camp-test":
+      campaignTest();
+      break;
+    case "camp-send":
+      campaignSend();
+      break;
     case "rdv-push-on":
       enablePush();
       break;

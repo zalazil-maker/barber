@@ -28,6 +28,11 @@ database through the same Worker.
   whole-euro (23,99 € → 24 €).
 - **Momo en repos** / **Salon fermé** blocks that day so the website stops
   offering it. Reopen it with **Rouvrir**.
+- **Campagne email** sends one email to every customer who booked online.
+  Unsubscribed addresses are skipped, every email has a working unsubscribe
+  link, and each address gets a given text only once — if a send stops part-way
+  (e.g. Resend's daily limit), pressing **Envoyer** again only reaches the rest.
+  **Test** sends a single copy to your own address first.
 
 ## Worker
 

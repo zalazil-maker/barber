@@ -155,6 +155,31 @@ const PROMO_CRON_TO = 21 * 60; // 21:00
 // 45–60 minutes before it starts instead of 55–60.
 const PROMO_EVERY_MIN = 15;
 
+// Unsubscribe links must reach this Worker — the website itself has no /api,
+// so a link built on SITE_URL 404s. Requests use their own origin; the cron
+// has no request, so it falls back to this.
+const DEFAULT_API_ORIGIN = "https://barbershop.ezalazil.workers.dev";
+
+// One-off marketing campaigns sent from the RDV tab. Emails go out through
+// Resend's batch endpoint, CAMPAIGN_BATCH at a time, so one request stays far
+// under Cloudflare's subrequest limit and a daily-quota error only stops the
+// current batch. Already-sent addresses are recorded, so resuming never
+// emails anyone twice.
+const CAMPAIGN_BATCH = 50;
+const EMAIL_RE = /^[^@\s]+@[^@\s.]+\.[^@\s]+$/;
+
+async function sha256Hex(s) {
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+async function unsubUrl(env, origin, email) {
+  return (
+    `${origin}/api/unsub?e=${encodeURIComponent(b64urlEncode(email))}` +
+    `&t=${await unsubToken(env, email)}`
+  );
+}
+
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
@@ -422,14 +447,22 @@ function b64urlDecode(s) {
 }
 
 // Signed with ADMIN_KEY so nobody can unsubscribe someone else's address.
+// The imported key is reused, since a campaign batch signs 50 links at once.
+let unsubKey = null;
+let unsubKeySecret = null;
 async function unsubToken(env, email) {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(String(env.ADMIN_KEY || "lb")),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"]
-  );
+  const secret = String(env.ADMIN_KEY || "lb");
+  if (!unsubKey || unsubKeySecret !== secret) {
+    unsubKey = await crypto.subtle.importKey(
+      "raw",
+      new TextEncoder().encode(secret),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    unsubKeySecret = secret;
+  }
+  const key = unsubKey;
   const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(email.toLowerCase()));
   return bytesToB64url(sig).slice(0, 32);
 }
@@ -675,6 +708,16 @@ export default {
         `create table if not exists marketing_optout (
            email text primary key,
            created_at timestamptz not null default now()
+         )`
+      );
+      // One row per address a campaign reached; the primary key is what
+      // guarantees nobody gets the same campaign twice.
+      await q(
+        `create table if not exists campaign_sends (
+           campaign text not null,
+           email text not null,
+           sent_at timestamptz not null default now(),
+           primary key (campaign, email)
          )`
       );
       await q(
@@ -1442,6 +1485,170 @@ export default {
           return json({ error: "Unknown op" }, 400);
         }
 
+        // ── Email campaign (RDV tab) ─────────────────────────────────────
+        // Recipients are customers who booked online with an email. The
+        // booking form tells them about these emails, which is what makes
+        // sending to them lawful; opted-out addresses are always excluded and
+        // every message carries a working unsubscribe link.
+        if (path === "/api/admin/campaign") {
+          if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
+          const body = await request.json();
+          const denied = requireAdmin(body);
+          if (denied) return json({ error: denied }, 401);
+
+          const subject = cleanText(body.subject, 150);
+          const message = String(body.message || "")
+            .replace(/\r\n?/g, "\n")
+            .replace(/[\u0000-\u0008\u000b-\u001f\u007f]/g, "")
+            .trim()
+            .slice(0, 5000);
+          if (subject.length < 3) return json({ error: "L'objet est trop court." }, 400);
+          if (message.length < 10) return json({ error: "Le message est trop court." }, 400);
+
+          await ensureSchema();
+          // Same text = same campaign, so a send that stopped part-way (daily
+          // quota, lost connection) resumes instead of starting over.
+          const campaign = (await sha256Hex(subject + "\n" + message)).slice(0, 16);
+          const emailPg = "^[^@[:space:]]+@[^@[:space:].]+\\.[^@[:space:]]+$";
+          const from = env.MAIL_FROM || "Luxury Barber <onboarding@resend.dev>";
+
+          const buildEmail = async (to, name) => {
+            const unsub = await unsubUrl(env, url.origin, to);
+            const first = String(name || "").trim().split(/\s+/)[0] || "";
+            return {
+              from,
+              to: [to],
+              subject,
+              text: [
+                first ? `Bonjour ${first},` : `Bonjour,`,
+                ``,
+                message,
+                ``,
+                `—`,
+                `Vous recevez cet email car vous avez réservé chez Luxury Barber.`,
+                `Ne plus recevoir nos actualités : ${unsub}`,
+              ].join("\n"),
+              headers: {
+                "List-Unsubscribe": `<${unsub}>`,
+                "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+              },
+            };
+          };
+
+          const counts = async () => {
+            const r = await q(
+              `with r as (
+                 select lower(email) as e from bookings
+                 where email is not null and status = 'confirmed'
+                   and lower(email) ~ $2
+                 group by lower(email)
+               ), o as (
+                 select r.e,
+                        exists (select 1 from marketing_optout m where m.email = r.e) as out,
+                        exists (select 1 from campaign_sends c
+                                where c.campaign = $1 and c.email = r.e) as done
+                 from r
+               )
+               select count(*)::int as total,
+                      count(*) filter (where out)::int as optedout,
+                      count(*) filter (where done and not out)::int as sent,
+                      count(*) filter (where not done and not out)::int as remaining
+               from o`,
+              [campaign, emailPg]
+            );
+            const c = (r.rows || [{}])[0] || {};
+            return {
+              campaign,
+              total: Number(c.total || 0),
+              optedout: Number(c.optedout || 0),
+              sent: Number(c.sent || 0),
+              remaining: Number(c.remaining || 0),
+              enabled: !!env.RESEND_API_KEY,
+            };
+          };
+
+          if (body.op === "preview") return json(await counts());
+
+          if (!env.RESEND_API_KEY) {
+            return json({ error: "L'envoi d'emails n'est pas configuré (RESEND_API_KEY)." }, 503);
+          }
+
+          // A single copy to the owner, so they can see it before it goes out.
+          // Not recorded: it does not count toward the campaign.
+          if (body.op === "test") {
+            const to = cleanText(body.to, 120).toLowerCase();
+            if (!EMAIL_RE.test(to)) return json({ error: "Adresse de test invalide." }, 400);
+            const r = await fetch("https://api.resend.com/emails", {
+              method: "POST",
+              headers: {
+                Authorization: "Bearer " + env.RESEND_API_KEY,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(await buildEmail(to, cleanText(body.name, 40) || "")),
+            });
+            if (!r.ok) {
+              let msg = "";
+              try { msg = (await r.json()).message || ""; } catch (e) {}
+              return json({ error: `Envoi refusé par Resend (${r.status})${msg ? " : " + msg : ""}` }, 502);
+            }
+            return json({ ok: true });
+          }
+
+          if (body.op === "send") {
+            const batch = await q(
+              `select lower(b.email) as email,
+                      (array_agg(b.name order by b.created_at desc))[1] as name
+               from bookings b
+               where b.email is not null and b.status = 'confirmed'
+                 and lower(b.email) ~ $3
+                 and not exists (select 1 from marketing_optout m where m.email = lower(b.email))
+                 and not exists (select 1 from campaign_sends c
+                                 where c.campaign = $1 and c.email = lower(b.email))
+               group by lower(b.email)
+               order by min(b.created_at)
+               limit $2`,
+              [campaign, CAMPAIGN_BATCH, emailPg]
+            );
+            const rows = batch.rows || [];
+            if (!rows.length) return json({ ok: true, sentNow: 0, ...(await counts()) });
+
+            const emails = [];
+            for (const r of rows) emails.push(await buildEmail(r.email, r.name));
+
+            const res = await fetch("https://api.resend.com/emails/batch", {
+              method: "POST",
+              headers: {
+                Authorization: "Bearer " + env.RESEND_API_KEY,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(emails),
+            });
+            if (!res.ok) {
+              let msg = "";
+              try { msg = (await res.json()).message || ""; } catch (e) {}
+              // Nothing is recorded, so this batch is retried on the next send.
+              return json(
+                {
+                  error:
+                    `Envoi interrompu par Resend (${res.status})${msg ? " : " + msg : ""}. ` +
+                    `Les clients déjà contactés ne recevront rien en double — relancez plus tard pour continuer.`,
+                },
+                502
+              );
+            }
+
+            await q(
+              `insert into campaign_sends (campaign, email)
+               select $1, x from json_array_elements_text($2::json) as x
+               on conflict do nothing`,
+              [campaign, JSON.stringify(rows.map((r) => r.email))]
+            );
+            return json({ ok: true, sentNow: rows.length, ...(await counts()) });
+          }
+
+          return json({ error: "Unknown op" }, 400);
+        }
+
         if (path === "/api/admin") {
           if (request.method !== "POST") return json({ error: "Method not allowed" }, 405);
           const body = await request.json();
@@ -1602,7 +1809,9 @@ export default {
          limit 50`
       );
 
-      const site = env.SITE_URL || "https://luxurybarber80.fr";
+      // Must point at this Worker: the website has no /api, so a link built on
+      // SITE_URL returned 404 and nobody could actually unsubscribe.
+      const api = env.API_URL || DEFAULT_API_ORIGIN;
 
       for (const row of due.rows || []) {
         // Claim it first: if the send fails we would rather skip one promo
@@ -1613,9 +1822,7 @@ export default {
         );
         if (Number(claimed.rowCount || 0) === 0) continue;
 
-        const unsub =
-          `${site}/api/unsub?e=${encodeURIComponent(b64urlEncode(row.email))}` +
-          `&t=${await unsubToken(env, row.email)}`;
+        const unsub = await unsubUrl(env, api, row.email);
 
         const when = `à ${hhmm(Number(row.slot_min)).replace(":", "h")} avec ${row.barber}`;
 
