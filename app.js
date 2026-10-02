@@ -2945,15 +2945,13 @@ syncNow();
 //  * Only poll when the tab is actually visible.
 //  * Skip polling on the Register tab (it shows no shared data; barbers mid-sale
 //    don't need remote updates, and every save already triggers an immediate sync).
-//  * Interval raised from 60s -> 300s. Visibility change, tab switch to Stats/
-//    Caisse/Analytics, mutations, and the "online" event all still trigger
-//    syncs — this interval only matters for a device that's been sitting on
-//    Stats/Analytics without moving.
+//  * Every 60s. Visibility change, tab switch to Stats/Caisse/Analytics,
+//    mutations, and the "online" event all still trigger syncs immediately.
 setInterval(() => {
   if (document.hidden) return;
   if (state.tab === "register") return;
   syncNow();
-}, 300000);
+}, 60000);
 window.addEventListener("online", syncNow);
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden) syncNow();

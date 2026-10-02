@@ -49,6 +49,12 @@ Secrets (Cloudflare dashboard → Workers → Settings → Variables):
 Prices, barbers, opening hours and slot length all live in the constants at the
 top of `worker.js`; the website reads them from `/api/config`.
 
+To keep Neon inside its free compute quota the Worker avoids waking the
+database: schema setup runs once per isolate, config/gallery/availability are
+cached in memory for 60 s (dropped on any booking, cancel or admin change), and
+the promo cron only queries between 07:00 and 21:00 Paris time, every 15
+minutes (`PROMO_CRON_*` constants — widen them if opening hours change).
+
 ## Files
 
 - `index.html` — page shell

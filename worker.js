@@ -31,15 +31,57 @@ const DEFAULT_BARBERS = ["Momo", "Amine"];
 // only get by booking here. `planity` is the regular Planity/walk-in rate,
 // shown struck through so the saving is visible. Omit `planity` for services
 // with no comparable Planity rate.
+// `image` is a photograph shown on the tarif card. Paths are served by
+// the website (public/cuts/ for the coupes photos, public/tarifs/ for
+// the treatment shot).
 const DEFAULT_SERVICES = [
   { id: "cheveux", label: "Cheveux", price: 18.0, planity: 20.0, duration: 30, icon: "ico-ciseaux",
+    image: "/cuts/classique.jpg",
     description: "Coupe homme soignée, adaptée à votre style. Dégradé, classique ou moderne — le résultat est toujours net." },
   { id: "barbe", label: "Barbe", price: 9.99, planity: 12.0, duration: 30, icon: "ico-rasoir",
+    image: "/cuts/barbe.jpg",
     description: "Taille et contours de barbe à la tondeuse et au rasoir, finition serviette chaude. Net, précis, rapide." },
   { id: "both", label: "Cheveux + Barbe", price: 23.99, planity: 26.0, duration: 30, icon: "ico-poteau",
+    image: "/cuts/taper.jpg",
     description: "Le combo complet — coupe homme et taille de barbe soignée pour un look parfaitement abouti de la tête aux pieds." },
-  { id: "enfant", label: "Enfant", price: 12.0, planity: null, duration: 30, icon: "ico-enfant",
-    description: "Coupe pour les petits dans une ambiance détendue. Pour que vos enfants repartent contents et bien coiffés." },
+  { id: "traitement_complet", label: "Le traitement complet !", price: 32.99, planity: null, duration: 60, icon: "ico-poteau",
+    image: "/tarifs/traitement.jpg",
+    description: "Coupe, barbe, shampooing et soins visage — pensé pour les grandes occasions : mariage, remise de diplôme, vacances, ou simplement pour prendre soin de vous.",
+    needsSkinType: true },
+];
+
+// Services that were seeded on an earlier deploy and are no longer offered.
+// Soft-deleted on startup so history (bookings, invoices) still references
+// them without them showing up in the tarif list or the booking form.
+const RETIRED_SERVICE_IDS = ["enfant"];
+
+// Products sold at the shop. Prices are optional — the panel lets the owner
+// set them later. `image` is a path served by the website (public/products/).
+const DEFAULT_PRODUCTS = [
+  { id: "hydralift", label: "Hydralift Hyaluron SPF15", brand: "Revuele",
+    description: "Crème-fluide hydratante à l'acide hyaluronique — lisse les rides et protège du soleil au quotidien.",
+    image: "/products/hydralift.jpg", sort: 10 },
+  { id: "vitamine-c", label: "Sérum Vitamine C 15%", brand: "Revuele",
+    description: "Éclaircit le teint et uniformise la peau pour un éclat visible dès les premiers jours.",
+    image: "/products/vitamine-c.jpg", sort: 20 },
+  { id: "niacinamide-serum", label: "Sérum Niacinamide 15%", brand: "Revuele",
+    description: "Resserre les pores et équilibre la peau — idéal pour les peaux mixtes à grasses.",
+    image: "/products/niacinamide-serum.jpg", sort: 30 },
+  { id: "glycolique", label: "Peeling Acide Glycolique", brand: "Revuele",
+    description: "Exfolie en douceur et affine le grain de peau — conçu pour les peaux à imperfections.",
+    image: "/products/glycolique.jpg", sort: 40 },
+  { id: "niacinamide-zinc", label: "Niacinamide + Zinc 3-en-1", brand: "The Doctor",
+    description: "Contrôle le sébum et unifie le teint — soin visage jour, nuit et contour des yeux.",
+    image: "/products/niacinamide-zinc.jpg", sort: 50 },
+  { id: "argan", label: "Crème de nuit Argan Oil", brand: "Revuele",
+    description: "Régénère la peau pendant la nuit avec l'huile d'argan — anti-rides et nourrissant pour peaux sèches.",
+    image: "/products/argan.jpg", sort: 60 },
+  { id: "spf50", label: "Sunprotect SPF 50+", brand: "Revuele",
+    description: "Protection très haute contre les UVA et UVB, fini sec — spécialement formulé pour peaux mixtes à grasses.",
+    image: "/products/spf50.jpg", sort: 70 },
+  { id: "masque-noir", label: "Black Mask Peel-Off", brand: "Revuele",
+    description: "Masque au charbon actif qui décolle les points noirs et purifie les pores en profondeur.",
+    image: "/products/masque-noir.jpg", sort: 80 },
 ];
 
 const DEFAULT_SLOT_MIN = 30; // minutes per bookable slot
@@ -75,6 +117,43 @@ const SHOP_TZ = "Europe/Paris";
 // `column "rdv" does not exist`. Adding them is idempotent, and the flag keeps
 // it to one round trip per Worker isolate rather than one per request.
 let eventsColumnsReady = false;
+
+// ── Neon compute savings ────────────────────────────────────────────────────
+// Neon bills for the time the database is awake, and it only goes back to
+// sleep after ~5 idle minutes. Every avoidable query is a wake-up avoided.
+
+// The schema setup (~35 statements) only needs to run once per Worker
+// isolate, not on every request. A fresh deploy starts fresh isolates, so new
+// defaults added to the constants above still land on the next deploy.
+let schemaPromise = null;
+
+// Small in-memory cache, per isolate. Cleared on every write that could change
+// what it holds (booking, cancel, any /admin change), so the only staleness
+// is across isolates, bounded by CACHE_MS.
+const CACHE_MS = 60 * 1000;
+const memo = new Map();
+function memoGet(key) {
+  const hit = memo.get(key);
+  if (hit && hit.exp > Date.now()) return hit.value;
+  memo.delete(key);
+  return undefined;
+}
+function memoSet(key, value) {
+  memo.set(key, { value, exp: Date.now() + CACHE_MS });
+  return value;
+}
+
+// The promo cron only needs the database while a promo could actually be due:
+// appointments start inside opening hours and the promo goes out up to an
+// hour before. Outside this Paris-time window it returns without a query, so
+// Neon can sleep through the night. Widen it if opening hours move outside
+// 08:00–21:00.
+const PROMO_CRON_FROM = 7 * 60; // 07:00
+const PROMO_CRON_TO = 21 * 60; // 21:00
+// The cron fires every 5 minutes; only every third run touches the database.
+// The lookahead is 60 minutes, so every appointment is still caught, now
+// 45–60 minutes before it starts instead of 55–60.
+const PROMO_EVERY_MIN = 15;
 
 function json(body, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -197,16 +276,17 @@ function validBooking(body, cfg) {
   if (!email) return { error: "Merci d'indiquer votre email pour recevoir la confirmation." };
   if (!/^[^@\s]+@[^@\s.]+\.[^@\s]+$/.test(email)) return { error: "Email invalide." };
 
-  return {
-    service,
-    barber,
-    date: body.date,
-    slot,
-    name,
-    phone,
-    email,
-    note: cleanText(body.note, 300),
-  };
+  // For services that ask for it (see `needsSkinType` in DEFAULT_SERVICES),
+  // the customer's answer is prepended to the note so the barber sees it in
+  // one place in the RDV tab.
+  let note = cleanText(body.note, 300);
+  const skinType = cleanText(body.skinType, 60);
+  const svcDef = DEFAULT_SERVICES.find((s) => s.id === service);
+  if (skinType && svcDef && svcDef.needsSkinType) {
+    note = `Peau : ${skinType}${note ? " — " + note : ""}`.slice(0, 300);
+  }
+
+  return { service, barber, date: body.date, slot, name, phone, email, note };
 }
 
 // ── Web Push (optional) ─────────────────────────────────────────────────────
@@ -303,25 +383,128 @@ async function sendPushes(env, subscriptions) {
 // ── Email notification (optional) ───────────────────────────────────────────
 // Only fires when RESEND_API_KEY and SHOP_EMAIL are configured; a mail failure
 // must never lose a booking that is already committed to the database.
-async function sendMail(env, to, subject, lines) {
+async function sendMail(env, to, subject, lines, extraHeaders) {
   if (!env.RESEND_API_KEY || !to) return;
   try {
+    const payload = {
+      from: env.MAIL_FROM || "Luxury Barber <onboarding@resend.dev>",
+      to: [to],
+      subject,
+      text: lines.join("\n"),
+    };
+    if (extraHeaders) payload.headers = extraHeaders;
     await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         Authorization: "Bearer " + env.RESEND_API_KEY,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        from: env.MAIL_FROM || "Luxury Barber <onboarding@resend.dev>",
-        to: [to],
-        subject,
-        text: lines.join("\n"),
-      }),
+      body: JSON.stringify(payload),
     });
   } catch (e) {
     // swallowed on purpose — see comment above
   }
+}
+
+// ── Marketing email ─────────────────────────────────────────────────────────
+// Sent alongside the confirmation. French law (art. L34-5 CPCE) allows this to
+// an existing customer for similar services, provided they were told when the
+// address was collected and every message carries a working opt-out — hence
+// the notice on the booking form and the unsubscribe link below.
+function b64urlEncode(s) {
+  return btoa(unescape(encodeURIComponent(s)))
+    .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+function b64urlDecode(s) {
+  s = String(s).replace(/-/g, "+").replace(/_/g, "/");
+  while (s.length % 4) s += "=";
+  return decodeURIComponent(escape(atob(s)));
+}
+
+// Signed with ADMIN_KEY so nobody can unsubscribe someone else's address.
+async function unsubToken(env, email) {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(String(env.ADMIN_KEY || "lb")),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"]
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(email.toLowerCase()));
+  return bytesToB64url(sig).slice(0, 32);
+}
+
+// Subject leads with the reminder, because that is the part the customer
+// actually needs an hour before — the offer rides along behind it.
+const PROMO_SUBJECT = "Votre RDV dans 1h — et notre nouveau Rituel Luxe Visage & Barbe ✂️";
+
+function promoLines(firstName, when) {
+  return [
+    `Bonjour ${firstName},`,
+    ``,
+    when ? `Votre rendez-vous est dans une heure — ${when}.` : `Votre rendez-vous est dans une heure.`,
+    ``,
+    `Merci pour votre confiance et votre réservation chez Luxury Barber.`,
+    ``,
+    `Nous avons le plaisir de vous annoncer notre nouveau soin signature :`,
+    `le Rituel Luxe Visage & Barbe.`,
+    ``,
+    `Une expérience complète qui va au-delà de la simple coupe :`,
+    ``,
+    `  • Coupe et taille de barbe soignées`,
+    `  • Shampooing et soin capillaire`,
+    `  • Exfoliation du visage`,
+    `  • Application de soins visage premium (sérums vitamine C, niacinamide, hydratation)`,
+    ``,
+    `Un moment de détente et de soin pensé pour les hommes qui veulent prendre`,
+    `soin de leur peau autant que de leur style.`,
+    ``,
+    `Nous proposons également une sélection de produits de soin à emporter,`,
+    `avec des conseils d'utilisation clairs pour prolonger les résultats à la maison.`,
+    ``,
+    `Envie d'essayer ? Parlez-en à votre barbier lors de votre prochain passage —`,
+    `il vous présentera le rituel et vous orientera vers ce qui convient le mieux`,
+    `à votre peau.`,
+    ``,
+    `À très bientôt,`,
+    `L'équipe Luxury Barber`,
+    `11 rue Duméril, 80000 Amiens`,
+    `@luxurybarber80`,
+  ];
+}
+
+// Builds the database query function. Lifted out of fetch() so the cron
+// handler can use it too.
+function makeQuery(env) {
+  const connectionString = cleanConnString(env.DATABASE_URL);
+  if (!connectionString) throw new Error("DATABASE_URL secret is not set");
+
+  // Derive Neon's SQL-over-HTTP endpoint from the connection string host,
+  // exactly how the Neon serverless driver does it.
+  let host;
+  try {
+    host = new URL(connectionString).hostname;
+  } catch (e) {
+    const m = connectionString.match(/@([^/:?]+)/);
+    if (m) host = m[1];
+  }
+  if (!host) throw new Error("Bad DATABASE_URL format");
+
+  const sqlUrl = "https://" + host.replace(/^[^.]+\./, "api.") + "/sql";
+
+  return async function q(query, params = []) {
+    const r = await fetch(sqlUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Neon-Connection-String": connectionString,
+      },
+      body: JSON.stringify({ query, params }),
+    });
+    const text = await r.text();
+    if (!r.ok) throw new Error("DB " + r.status + ": " + text);
+    return text ? JSON.parse(text) : { rows: [] };
+  };
 }
 
 export default {
@@ -330,52 +513,29 @@ export default {
       return new Response(null, { headers: CORS });
     }
 
-    const connectionString = cleanConnString(env.DATABASE_URL);
-    if (!connectionString) {
-      return json({ error: "DATABASE_URL secret is not set" }, 500);
-    }
-
-    // Derive Neon's SQL-over-HTTP endpoint from the connection string host,
-    // exactly how the Neon serverless driver does it.
-    let sqlUrl;
+    let q;
     try {
-      let host;
-      try {
-        host = new URL(connectionString).hostname;
-      } catch (e) {
-        const m = connectionString.match(/@([^/:?]+)/);
-        if (m) host = m[1];
-      }
-      if (!host) {
-        return json(
-          { error: "Bad DATABASE_URL format", starts_with: connectionString.slice(0, 13) },
-          500
-        );
-      }
-      const apiHost = host.replace(/^[^.]+\./, "api.");
-      sqlUrl = "https://" + apiHost + "/sql";
+      q = makeQuery(env);
     } catch (e) {
-      return json({ error: "Bad DATABASE_URL format" }, 500);
+      return json({ error: String(e.message || e) }, 500);
     }
 
-    async function q(query, params = []) {
-      const r = await fetch(sqlUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Neon-Connection-String": connectionString,
-        },
-        body: JSON.stringify({ query, params }),
-      });
-      const text = await r.text();
-      if (!r.ok) throw new Error("DB " + r.status + ": " + text);
-      return text ? JSON.parse(text) : { rows: [] };
+    // Runs the schema setup once per isolate; concurrent callers share the
+    // same promise. A failure resets it so the next request retries.
+    function ensureSchema() {
+      if (!schemaPromise) {
+        schemaPromise = runSchema().catch((e) => {
+          schemaPromise = null;
+          throw e;
+        });
+      }
+      return schemaPromise;
     }
 
     // Creates the booking tables on first use so there is no manual SQL step.
     // The partial unique index is what actually makes double-booking
     // impossible, even if two customers tap "confirmer" at the same instant.
-    async function ensureSchema() {
+    async function runSchema() {
       await q(
         `create table if not exists bookings (
            id text primary key,
@@ -415,6 +575,7 @@ export default {
          )`
       );
       await q("alter table services add column if not exists description text");
+      await q("alter table services add column if not exists image text");
       // barbers.id holds the name, because events.barber and bookings.barber
       // already store names — keeping them equal avoids migrating history.
       await q(
@@ -432,6 +593,30 @@ export default {
            value text not null
          )`
       );
+      // Products sold at the shop. Prices are optional; when null the card
+       // just shows the product without any "€" line.
+      await q(
+        `create table if not exists products (
+           id text primary key,
+           label text not null,
+           brand text,
+           description text,
+           image text,
+           price numeric(6,2),
+           sort int not null default 0,
+           active boolean not null default true,
+           created_at timestamptz not null default now()
+         )`
+      );
+
+      for (const p of DEFAULT_PRODUCTS) {
+        await q(
+          `insert into products (id,label,brand,description,image,price,sort)
+           values ($1,$2,$3,$4,$5,$6,$7) on conflict (id) do nothing`,
+          [p.id, p.label, p.brand, p.description, p.image, p.price ?? null, p.sort]
+        );
+      }
+
       await q(
         `create table if not exists media (
            id text primary key,
@@ -444,19 +629,36 @@ export default {
          )`
       );
 
-      const svcCount = await q("select count(*)::int as n from services");
-      if (Number((svcCount.rows || [{}])[0]?.n || 0) === 0) {
-        let i = 0;
-        for (const s of DEFAULT_SERVICES) {
+      // Insert any default service the database is missing. `on conflict do
+       // nothing` keeps existing edits — this is only a top-up, so a price
+       // the owner changed via /admin is not clobbered. Runs every startup
+       // so a new default added later actually lands.
+      let i = 0;
+      for (const s of DEFAULT_SERVICES) {
+        await q(
+          `insert into services (id,label,price,planity,duration,icon,description,image,sort)
+           values ($1,$2,$3,$4,$5,$6,$7,$8,$9) on conflict (id) do nothing`,
+          [s.id, s.label, s.price, s.planity, s.duration, s.icon, s.description, s.image || null, i++]
+        );
+      }
+      // Backfill the image on rows seeded before that column existed — only
+      // when the current value is null, so a photo set from /admin is kept.
+      for (const s of DEFAULT_SERVICES) {
+        if (s.image) {
           await q(
-            `insert into services (id,label,price,planity,duration,icon,description,sort)
-             values ($1,$2,$3,$4,$5,$6,$7,$8) on conflict (id) do nothing`,
-            [s.id, s.label, s.price, s.planity, s.duration, s.icon, s.description, i++]
+            "update services set image = $2 where id = $1 and image is null",
+            [s.id, s.image]
           );
         }
       }
-      const barbCount = await q("select count(*)::int as n from barbers");
-      if (Number((barbCount.rows || [{}])[0]?.n || 0) === 0) {
+      // Retire services that used to be defaults but aren't offered anymore.
+      // Soft-delete so past bookings still resolve their label.
+      for (const id of RETIRED_SERVICE_IDS) {
+        await q("update services set active=false where id=$1 and active=true", [id]);
+      }
+      // Same top-up pattern as services: insert any missing default without
+       // overwriting an existing row.
+      {
         let i = 0;
         for (const b of DEFAULT_BARBERS) {
           await q(
@@ -466,6 +668,15 @@ export default {
         }
       }
 
+      // Records when the pre-appointment promo went out, so the cron handler
+      // sends it exactly once per booking.
+      await q("alter table bookings add column if not exists promo_sent_at timestamptz");
+      await q(
+        `create table if not exists marketing_optout (
+           email text primary key,
+           created_at timestamptz not null default now()
+         )`
+      );
       await q(
         `create table if not exists push_subscriptions (
            endpoint text primary key,
@@ -498,11 +709,18 @@ export default {
     // validation, pricing — goes through this rather than the constants, so an
     // edit in /admin takes effect on the next request.
     async function loadConfig() {
+      const cached = memoGet("config");
+      if (cached) return cached;
+      return memoSet("config", await readConfig());
+    }
+
+    async function readConfig() {
       await ensureSchema();
-      const [svc, barb, set] = await Promise.all([
-        q("select id,label,price,planity,duration,icon,description,sort from services where active order by sort, label"),
+      const [svc, barb, set, prod] = await Promise.all([
+        q("select id,label,price,planity,duration,icon,description,image,sort from services where active order by sort, label"),
         q("select id,name,photo_key,sort from barbers where active order by sort, name"),
         q("select key,value from settings"),
+        q("select id,label,brand,description,image,price,sort from products where active order by sort, label"),
       ]);
 
       const services = {};
@@ -513,6 +731,7 @@ export default {
           planity: r.planity == null ? null : Number(r.planity),
           duration: Number(r.duration) || DEFAULT_SLOT_MIN,
           icon: r.icon || null,
+          image: r.image || null,
           desc: r.description || "",
         };
       }
@@ -532,10 +751,29 @@ export default {
         } catch (e) {}
       }
 
+      // Which services want an extra "skin type" field on the booking form.
+      // Kept alongside the service so the site can render the field without
+      // needing a hardcoded id.
+      const skinTypeServices = DEFAULT_SERVICES
+        .filter((s) => s.needsSkinType)
+        .map((s) => s.id);
+
+      const products = (prod.rows || []).map((r) => ({
+        id: r.id,
+        label: r.label,
+        brand: r.brand || null,
+        description: r.description || "",
+        image: r.image || null,
+        price: r.price == null ? null : Number(r.price),
+        sort: Number(r.sort),
+      }));
+
       return {
         services,
         barbers,
         barberInfo,
+        products,
+        skinTypeServices,
         hours: settings.hours || DEFAULT_HOURS,
         slotMinutes: Number(settings.slotMinutes) || DEFAULT_SLOT_MIN,
       };
@@ -559,29 +797,48 @@ export default {
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, "") || "/";
 
+    // Writes that can change cached config or availability. The cache is
+    // dropped after they finish so this isolate never serves stale data.
+    const invalidates =
+      request.method === "POST" &&
+      (path === "/api/book" ||
+        path === "/api/cancel" ||
+        path === "/api/admin" ||
+        path.startsWith("/api/admin/"));
+
+    try {
     try {
       // ── Booking API ────────────────────────────────────────────────────
       if (path.startsWith("/api/")) {
         if (path === "/api/config") {
+          let gallery = memoGet("gallery");
           const cfg = await loadConfig();
-          const gallery = await q(
-            "select id, kind, r2_key, caption from media order by sort, created_at desc limit 60"
-          );
-          return json({
+          if (!gallery) {
+            const g = await q(
+              "select id, kind, r2_key, caption from media order by sort, created_at desc limit 60"
+            );
+            gallery = memoSet("gallery", g.rows || []);
+          }
+          const res = json({
             barbers: cfg.barbers,
             barberInfo: cfg.barberInfo,
             services: cfg.services,
+            products: cfg.products,
+            skinTypeServices: cfg.skinTypeServices,
             slotMinutes: cfg.slotMinutes,
             maxDaysAhead: MAX_DAYS_AHEAD,
             hours: cfg.hours,
             today: shopNow().date,
-            media: (gallery.rows || []).map((m) => ({
+            media: gallery.map((m) => ({
               id: m.id,
               kind: m.kind,
               url: "/api/media/" + m.r2_key,
               caption: m.caption,
             })),
           });
+          // Lets a visitor's browser reuse it while they click around the site.
+          res.headers.set("Cache-Control", "public, max-age=60");
+          return res;
         }
 
         // Public: serve an uploaded photo or video out of R2.
@@ -611,23 +868,30 @@ export default {
           const all = slotsForDate(date, cfg);
           if (!all.length) return json({ date, closed: true, barbers: {} });
 
-          const taken = await q(
-            "select barber, slot_min from bookings where slot_date = $1 and status = 'confirmed'",
-            [date]
-          );
-          const blocked = await q(
-            "select barber, slot_min from blocked_slots where slot_date = $1",
-            [date]
-          );
+          // Bookings and blocks for the day in one round trip instead of two.
+          let dayRows = memoGet("avail:" + date);
+          if (!dayRows) {
+            const r = await q(
+              `select 'b' as k, barber, slot_min from bookings
+                 where slot_date = $1 and status = 'confirmed'
+               union all
+               select 'x' as k, barber, slot_min from blocked_slots
+                 where slot_date = $1`,
+              [date]
+            );
+            dayRows = memoSet("avail:" + date, r.rows || []);
+          }
+          const takenRows = dayRows.filter((r) => r.k === "b");
+          const blockedRows = dayRows.filter((r) => r.k === "x");
 
           const out = {};
           for (const b of cfg.barbers) {
             const busy = new Set();
-            for (const r of taken.rows || []) {
+            for (const r of takenRows) {
               if (r.barber === b) busy.add(Number(r.slot_min));
             }
             let wholeDayOff = false;
-            for (const r of blocked.rows || []) {
+            for (const r of blockedRows) {
               if (r.barber !== b && r.barber !== "ALL") continue;
               if (r.slot_min == null) wholeDayOff = true;
               else busy.add(Number(r.slot_min));
@@ -711,14 +975,17 @@ export default {
             );
           }
 
-          const blocked = await q(
-            `select 1 from blocked_slots
+          const blockedSql = `select 1 from blocked_slots
              where slot_date = $1 and (barber = $2 or barber = 'ALL')
-               and (slot_min is null or slot_min = $3) limit 1`,
-            [v.date, v.barber === "any" ? "ALL" : v.barber, v.slot]
-          );
-          if ((blocked.rows || []).length && v.barber !== "any") {
-            return json({ error: "Ce créneau n'est plus disponible." }, 409);
+               and (slot_min is null or slot_min = $3) limit 1`;
+
+          // A named barber is checked once here; "peu importe" is checked per
+          // candidate inside the loop instead.
+          if (v.barber !== "any") {
+            const blocked = await q(blockedSql, [v.date, v.barber, v.slot]);
+            if ((blocked.rows || []).length) {
+              return json({ error: "Ce créneau n'est plus disponible." }, 409);
+            }
           }
 
           const svc = cfg.services[v.service];
@@ -727,13 +994,10 @@ export default {
           const candidates = v.barber === "any" ? cfg.barbers : [v.barber];
 
           for (const barber of candidates) {
-            const off = await q(
-              `select 1 from blocked_slots
-               where slot_date = $1 and (barber = $2 or barber = 'ALL')
-                 and (slot_min is null or slot_min = $3) limit 1`,
-              [v.date, barber, v.slot]
-            );
-            if ((off.rows || []).length) continue;
+            if (v.barber === "any") {
+              const off = await q(blockedSql, [v.date, barber, v.slot]);
+              if ((off.rows || []).length) continue;
+            }
 
             const id = token();
             const cancelToken = token();
@@ -784,6 +1048,10 @@ export default {
               v.note ? `Note       : ${v.note}` : ``,
             ]);
             if (v.email) {
+              // The promotional email is NOT sent here — the cron handler
+              // below sends it an hour before the appointment, so it lands
+              // when the customer is about to come in, and is skipped
+              // entirely if they cancel in the meantime.
               await sendMail(env, v.email, `Votre rendez-vous chez Luxury Barber — ${when}`, [
                 `Bonjour ${v.name},`,
                 ``,
@@ -813,6 +1081,45 @@ export default {
           }
 
           return json({ error: "Ce créneau vient d'être réservé. Choisissez-en un autre." }, 409);
+        }
+
+        // One-click unsubscribe from the marketing email. Reached from the
+        // link in the message and from the List-Unsubscribe header, so it has
+        // to work on a plain GET with no session.
+        if (path === "/api/unsub") {
+          const page = (title, body) =>
+            new Response(
+              `<!doctype html><html lang="fr"><meta charset="utf-8">` +
+                `<meta name="viewport" content="width=device-width,initial-scale=1">` +
+                `<title>${title}</title>` +
+                `<body style="background:#0d0d0d;color:#f0ece4;font-family:system-ui,sans-serif;` +
+                `display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;padding:24px">` +
+                `<div style="max-width:420px;text-align:center">` +
+                `<h1 style="color:#c9a227;font-size:1.3rem;margin:0 0 12px">${title}</h1>` +
+                `<p style="color:#9e9890;line-height:1.6;margin:0 0 24px">${body}</p>` +
+                `<a href="${env.SITE_URL || "https://luxurybarber80.fr"}" ` +
+                `style="color:#c9a227">Retour au site</a></div></body></html>`,
+              { headers: { "Content-Type": "text/html; charset=utf-8", ...CORS } }
+            );
+
+          let email = "";
+          try {
+            email = b64urlDecode(url.searchParams.get("e") || "");
+          } catch (e) {}
+          const tok = url.searchParams.get("t") || "";
+          if (!email || !safeEqual(tok, await unsubToken(env, email))) {
+            return page("Lien invalide", "Ce lien de désinscription n'est pas valide.");
+          }
+
+          await ensureSchema();
+          await q(
+            "insert into marketing_optout (email) values ($1) on conflict (email) do nothing",
+            [email.toLowerCase()]
+          );
+          return page(
+            "C'est fait",
+            "Vous ne recevrez plus nos actualités. Vos confirmations de rendez-vous continueront d'arriver normalement."
+          );
         }
 
         if (path === "/api/cancel") {
@@ -867,11 +1174,12 @@ export default {
 
           // Everything the panel needs to render, including hidden entries.
           if (body.op === "state") {
-            const [svc, barb, med, set] = await Promise.all([
-              q("select id,label,price,planity,duration,icon,description,sort,active from services order by sort, label"),
+            const [svc, barb, med, set, prod] = await Promise.all([
+              q("select id,label,price,planity,duration,icon,description,image,sort,active from services order by sort, label"),
               q("select id,name,photo_key,sort,active from barbers order by sort, name"),
               q("select id,kind,r2_key,caption,sort,created_at from media order by sort, created_at desc"),
               q("select key,value from settings"),
+              q("select id,label,brand,description,image,price,sort,active from products order by sort, label"),
             ]);
             const settings = {};
             for (const r of set.rows || []) {
@@ -901,11 +1209,57 @@ export default {
                 caption: m.caption,
                 sort: Number(m.sort),
               })),
+              products: (prod.rows || []).map((r) => ({
+                id: r.id,
+                label: r.label,
+                brand: r.brand || "",
+                description: r.description || "",
+                image: r.image || null,
+                price: r.price == null ? null : Number(r.price),
+                sort: Number(r.sort),
+                active: r.active === true || r.active === "t",
+              })),
               hours: settings.hours || DEFAULT_HOURS,
               slotMinutes: Number(settings.slotMinutes) || DEFAULT_SLOT_MIN,
               storage: !!env.MEDIA,
               email: !!env.RESEND_API_KEY,
             });
+          }
+
+          // Products ------------------------------------------------------
+          if (body.op === "product-save") {
+            const p = body.product || {};
+            const id = cleanText(p.id, 40).toLowerCase().replace(/[^a-z0-9_-]/g, "");
+            if (!id) return json({ error: "Identifiant de produit invalide." }, 400);
+            const label = cleanText(p.label, 80);
+            if (!label) return json({ error: "Le nom du produit est obligatoire." }, 400);
+            const price =
+              p.price === "" || p.price == null ? null : Number(p.price);
+            if (price != null && (!Number.isFinite(price) || price < 0 || price > 999)) {
+              return json({ error: "Prix invalide." }, 400);
+            }
+            await q(
+              `insert into products (id,label,brand,description,image,price,sort,active)
+               values ($1,$2,$3,$4,$5,$6,$7,true)
+               on conflict (id) do update set
+                 label=excluded.label, brand=excluded.brand,
+                 description=excluded.description, image=excluded.image,
+                 price=excluded.price, sort=excluded.sort, active=true`,
+              [
+                id, label,
+                cleanText(p.brand, 40) || null,
+                cleanText(p.description, 300) || null,
+                cleanText(p.image, 200) || null,
+                price,
+                Number(p.sort) || 0,
+              ]
+            );
+            return json({ ok: true, id });
+          }
+
+          if (body.op === "product-delete") {
+            await q("update products set active=false where id=$1", [String(body.id || "")]);
+            return json({ ok: true });
           }
 
           // Services ------------------------------------------------------
@@ -926,14 +1280,16 @@ export default {
             }
             const duration = Number(s.duration) || DEFAULT_SLOT_MIN;
             await q(
-              `insert into services (id,label,price,planity,duration,icon,description,sort,active)
-               values ($1,$2,$3,$4,$5,$6,$7,$8,true)
+              `insert into services (id,label,price,planity,duration,icon,description,image,sort,active)
+               values ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
                on conflict (id) do update set
                  label=excluded.label, price=excluded.price, planity=excluded.planity,
                  duration=excluded.duration, icon=excluded.icon,
-                 description=excluded.description, sort=excluded.sort, active=true`,
+                 description=excluded.description, image=excluded.image,
+                 sort=excluded.sort, active=true`,
               [id, label, price, planity, duration, cleanText(s.icon, 40) || null,
-               cleanText(s.description, 300) || null, Number(s.sort) || 0]
+               cleanText(s.description, 300) || null, cleanText(s.image, 200) || null,
+               Number(s.sort) || 0]
             );
             return json({ ok: true, id });
           }
@@ -1199,6 +1555,85 @@ export default {
       return json({ error: "Method not allowed" }, 405);
     } catch (err) {
       return json({ error: String(err && err.message ? err.message : err) }, 500);
+    }
+    } finally {
+      if (invalidates) memo.clear();
+    }
+  },
+
+  // ── Cron: the pre-appointment promotional email ──────────────────────────
+  // Runs on a Cloudflare Cron Trigger (every 5 minutes). Sends the shop's
+  // promotion to anyone whose appointment starts within the next hour and who
+  // has not already received it.
+  //
+  // Doing it here rather than at booking time means a customer who cancels
+  // never gets it, and someone booking three weeks ahead is not emailed three
+  // weeks early.
+  async scheduled(event, env, ctx) {
+    if (!env.RESEND_API_KEY) return;
+
+    // Skip without touching Neon outside the promo window, and on two runs
+    // out of three — see PROMO_CRON_FROM / PROMO_EVERY_MIN at the top.
+    const t = shopNow().minutes;
+    if (t < PROMO_CRON_FROM || t > PROMO_CRON_TO) return;
+    if (t % PROMO_EVERY_MIN >= 5) return;
+
+    let q;
+    try {
+      q = makeQuery(env);
+    } catch (e) {
+      return;
+    }
+
+    try {
+      // `slot_date + slot_min` is wall-clock time in the shop; `at time zone`
+      // turns it into a real instant so the comparison survives DST.
+      const due = await q(
+        `select b.id, b.name, b.email, b.slot_date, b.slot_min, b.barber
+         from bookings b
+         where b.status = 'confirmed'
+           and b.promo_sent_at is null
+           and b.email is not null
+           and not exists (
+             select 1 from marketing_optout m where m.email = lower(b.email)
+           )
+           and ((b.slot_date + (b.slot_min || ' minutes')::interval)
+                 at time zone 'Europe/Paris') between now() and now() + interval '60 minutes'
+         limit 50`
+      );
+
+      const site = env.SITE_URL || "https://luxurybarber80.fr";
+
+      for (const row of due.rows || []) {
+        // Claim it first: if the send fails we would rather skip one promo
+        // than risk emailing the same customer on every cron tick.
+        const claimed = await q(
+          "update bookings set promo_sent_at = now() where id = $1 and promo_sent_at is null",
+          [row.id]
+        );
+        if (Number(claimed.rowCount || 0) === 0) continue;
+
+        const unsub =
+          `${site}/api/unsub?e=${encodeURIComponent(b64urlEncode(row.email))}` +
+          `&t=${await unsubToken(env, row.email)}`;
+
+        const when = `à ${hhmm(Number(row.slot_min)).replace(":", "h")} avec ${row.barber}`;
+
+        await sendMail(
+          env,
+          row.email,
+          PROMO_SUBJECT,
+          promoLines(String(row.name || "").split(/\s+/)[0] || "", when).concat([
+            ``,
+            `—`,
+            `Vous recevez cet email car vous avez réservé chez Luxury Barber.`,
+            `Ne plus recevoir nos actualités : ${unsub}`,
+          ]),
+          { "List-Unsubscribe": `<${unsub}>` }
+        );
+      }
+    } catch (e) {
+      // A failed run is retried on the next tick; nothing else depends on it.
     }
   },
 };
