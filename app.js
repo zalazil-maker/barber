@@ -1002,10 +1002,29 @@ function generateWeeklyPDF() {
   showToast("PDF saved: " + fname);
 }
 
+// Bottom navigation: [tab id, label, icon]. Icons are simple stroked SVGs.
+const TABS = [
+  ["register", "Register", "scissors"],
+  ["rdv", "RDV", "calendar"],
+  ["caisse", "Caisse", "wallet"],
+  ["stats", "Stats", "bars"],
+  ["analytics", "Analytics", "trend"],
+];
+const TAB_ICONS = {
+  scissors: '<circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M20 4 8.12 15.88M14.47 14.48 20 20M8.12 8.12 12 12"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="3"/><path d="M16 2v4M8 2v4M3 10h18"/>',
+  wallet: '<rect x="2" y="6" width="20" height="13" rx="3"/><circle cx="12" cy="12.5" r="2.5"/><path d="M6 12.5h.01M18 12.5h.01"/>',
+  bars: '<path d="M18 20V10M12 20V4M6 20v-6"/>',
+  trend: '<path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/>',
+};
+function tabIcon(name) {
+  return `<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${TAB_ICONS[name]}</svg>`;
+}
+
 function render() {
   const root = document.getElementById("app");
   let html = `<header>
-    <h1>LX Barbershop</h1>
+    <h1><span class="logo-mark">LX</span><span class="brand">Barbershop</span></h1>
     <button id="sync-badge" class="sync-badge ${state.sync}" data-action="sync">${
     state.sync === "syncing"
       ? "Syncing…"
@@ -1017,13 +1036,10 @@ function render() {
   }</button>
   </header>`;
 
-  html += `<div class="tabs">
-    <button class="tab ${state.tab === "register" ? "active" : ""}" data-tab="register">Register</button>
-    <button class="tab ${state.tab === "rdv" ? "active" : ""}" data-tab="rdv">RDV</button>
-    <button class="tab ${state.tab === "caisse" ? "active" : ""}" data-tab="caisse">Caisse</button>
-    <button class="tab ${state.tab === "stats" ? "active" : ""}" data-tab="stats">Stats</button>
-    <button class="tab ${state.tab === "analytics" ? "active" : ""}" data-tab="analytics">Analytics</button>
-  </div>`;
+  html += `<nav class="tabs">${TABS.map(
+    ([id, label, icon]) =>
+      `<button class="tab ${state.tab === id ? "active" : ""}" data-tab="${id}">${tabIcon(icon)}<span>${label}</span></button>`
+  ).join("")}</nav>`;
 
   if (state.tab === "register") html += renderRegister();
   else if (state.tab === "rdv") html += renderRDV();
