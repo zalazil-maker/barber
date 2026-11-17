@@ -195,7 +195,7 @@ function rebuildData() {
     else if (e.type === "acompte")
       d.acomptes.push({ id: e.id, barber: e.barber, amount: e.amount, time, createdAt: e.created_at || null });
     else if (e.type === "product")
-      d.products.push({ id: e.id, barber: e.barber, amount: e.amount, time, createdAt: e.created_at || null });
+      d.products.push({ id: e.id, barber: e.barber, amount: e.amount, method: e.method || null, time, createdAt: e.created_at || null });
     // Cash the owner takes out of the drawer, and actual counts of the drawer.
     // Neither is shop income or an expense, so Stats, Analytics and the PDFs ignore them.
     else if (e.type === "retrait")
@@ -285,6 +285,14 @@ async function fetchAll() {
     rdv: r.rdv === true || r.rdv === "t" || r.rdv === "true",
     created_at: r.created_at || null,
   }));
+  // Changes made while this download was in flight are still queued; lay them
+  // over the server copy so the screen doesn't show the old value meanwhile.
+  for (const job of state.pending) {
+    const ev = state.events.find((e) => e.id === (job.op === "insert" ? job.row.id : job.id));
+    if (job.op === "insert" && !ev) state.events.push({ ...job.row });
+    else if (job.op === "update" && ev) Object.assign(ev, job.patch);
+    else if (job.op === "delete" && ev) ev.deleted_at = ev.deleted_at || new Date().toISOString();
+  }
   saveCache();
   rebuildData();
 }
@@ -307,6 +315,9 @@ async function syncNow() {
     setSync(err && err.quota ? "quota" : "offline");
   } finally {
     syncing = false;
+    // A save made during this sync was skipped by its own syncNow (one runs at
+    // a time); send it now instead of waiting for the next refresh.
+    if (state.pending.length && state.sync === "idle") setTimeout(syncNow, 0);
   }
 }
 
@@ -319,7 +330,7 @@ function isMidEntry() {
   if (ae && TYPING_FIELDS.includes(ae.id)) return true;
   return (
     state.tab === "register" &&
-    (state.view === "amount" || state.view === "payment" || state.view === "expense-amount")
+    ["amount", "payment", "expense-amount", "product-amount", "product-payment", "acompte-amount"].includes(state.view)
   );
 }
 
@@ -1074,6 +1085,22 @@ function renderRegister() {
     </div>`;
   }
 
+  if (state.view === "product-payment") {
+    const editing = state.editingId ? " (editing)" : "";
+    return `<div class="screen">
+      <button class="back-btn" data-action="back-product-amount">&larr; Back</button>
+      <h2>${state.selectedBarber} — Product ${parseInt(state.amount, 10)}€ — Payment?${editing}</h2>
+      <div class="payment">
+        <button class="pay-box esp" data-action="pay-product" data-method="ESP">
+          ESP<span class="label">Cash</span>
+        </button>
+        <button class="pay-box cb" data-action="pay-product" data-method="CB">
+          CB<span class="label">Card</span>
+        </button>
+      </div>
+    </div>`;
+  }
+
   if (state.view === "acompte-barber") {
     return `<div class="screen">
       <button class="back-btn" data-action="back-home">&larr; Back</button>
@@ -1746,6 +1773,17 @@ function caisseLoadTicked(b, iso) {
 }
 function caisseSaveTicked(b, iso, ids) { localStorage.setItem(caisseTickedKey(b, iso), JSON.stringify(ids)); }
 
+// Everything a barber took on a day that has a payment method: haircuts, plus
+// products sold since the product screen asks cash or card (older products
+// have no method and are left out).
+function caisseDayItems(barber, dayMs, dayEnd) {
+  const inDay = (e) => e.time >= dayMs && e.time < dayEnd && e.barber === barber;
+  return [
+    ...state.data.entries.filter(inDay),
+    ...state.data.products.filter((p) => inDay(p) && p.method).map((p) => ({ ...p, isProduct: true })),
+  ];
+}
+
 function renderCaisse() {
   const { barber, dayOffset, mode } = state.caisse;
   const iso = caisseDayISO(dayOffset);
@@ -1773,9 +1811,7 @@ function renderCaisse() {
     return html;
   }
 
-  const dayEntries = state.data.entries.filter(
-    (e) => e.time >= dayMs && e.time < dayEnd && e.barber === barber
-  );
+  const dayEntries = caisseDayItems(barber, dayMs, dayEnd);
   const espEntries = dayEntries.filter((e) => e.method === "ESP");
   const cbEntries = dayEntries.filter((e) => e.method === "CB");
   const espTotal = espEntries.reduce((s, e) => s + e.amount, 0);
@@ -1807,7 +1843,7 @@ function renderCaisse() {
     <h3>${barber} — ${dayHeading}</h3>
     <div class="row"><span class="label">Cash (ESP) · ${espEntries.length}</span><span class="value" id="hdr-esp">${espStatusHtml(countedNow)}</span></div>
     <div class="row"><span class="label">Card (CB) · ${cbEntries.length}</span><span class="value" id="hdr-cb">${cbStatusHtml(tickedNow)}</span></div>
-    <div class="row total"><span class="label">Day total (from Stats)</span><span class="value">${dayTotal}€</span></div>
+    <div class="row total"><span class="label">Day total (haircuts + products)</span><span class="value">${dayTotal}€</span></div>
     <div class="row"><span class="label">Reconciled so far</span><span class="value" id="hdr-recon">${reconciledNow}€ / ${dayTotal}€</span></div>
     <div class="caisse-diff ${dayMatched ? "match" : ""}" id="hdr-day-status" style="margin-top:10px">
       ${dayTotal === 0 ? "No haircuts recorded on this day yet." : dayMatched ? "✓ Day fully reconciled — caisse matches Stats." : "Keep going — cash + card should add up to the day total."}
@@ -1860,6 +1896,7 @@ function renderCaisse() {
           <input type="checkbox" class="cb-tick" data-id="${e.id}" ${isTick ? "checked" : ""}>
           <span class="cb-time">${formatTime(e.time)}</span>
           <span class="cb-amt">${e.amount}€</span>
+          ${e.isProduct ? `<span class="coupon-tag">Produit</span>` : ""}
           ${e.coupon ? `<span class="coupon-tag">−20%</span>` : ""}
           ${e.rdv ? `<span class="rdv-tag">RDV −10%</span>` : ""}
         </label>`;
@@ -1917,9 +1954,7 @@ function attachCaisseInputs() {
 }
 
 function caisseUpdateTotals(mode, barber, iso, dayMs, dayEnd) {
-  const dayEntries = state.data.entries.filter(
-    (e) => e.time >= dayMs && e.time < dayEnd && e.barber === barber
-  );
+  const dayEntries = caisseDayItems(barber, dayMs, dayEnd);
   const espTotal = dayEntries.filter((e) => e.method === "ESP").reduce((s, e) => s + e.amount, 0);
   const cbEntries = dayEntries.filter((e) => e.method === "CB");
   const cbTotal = cbEntries.reduce((s, e) => s + e.amount, 0);
@@ -2129,6 +2164,7 @@ function renderStats() {
           </div>
           <div>
             <span class="amt product-amt">${e.amount}€</span>
+            ${e.method ? `<span class="pay ${e.method}">${e.method}</span>` : ""}
             <button class="edit-btn" data-action="edit-entry" data-kind="product" data-id="${e.id}" title="Edit">✎</button>
             <button class="del-btn" data-action="delete-entry" data-kind="product" data-id="${e.id}" title="Delete">×</button>
           </div>
@@ -2349,8 +2385,9 @@ function fmtPct(now, prev) {
 // What should physically be in the drawer at `atMs`. It starts from the most
 // recent count before that moment (the counted amount is the truth); with no
 // count yet, from an empty drawer on the 1st of the current month. Advances
-// and expenses are assumed to be paid from the drawer. Products have no
-// cash/card choice, so they are reported separately rather than guessed.
+// and expenses are assumed to be paid from the drawer. Products sold in cash
+// count as cash in; older products recorded before the cash/card choice
+// existed are reported separately rather than guessed.
 function drawerAt(atMs) {
   const counts = state.data.drawerCounts
     .filter((c) => c.time < atMs)
@@ -2366,7 +2403,8 @@ function drawerAt(atMs) {
   const acomptes = sum(state.data.acomptes);
   const expenses = sum(state.data.expenses);
   const retraits = sum(state.data.retraits);
-  const products = sum(state.data.products);
+  const productsCash = sum(state.data.products.filter((p) => p.method === "ESP"));
+  const products = sum(state.data.products.filter((p) => !p.method));
   const base = last ? last.amount : 0;
   return {
     last,
@@ -2377,7 +2415,8 @@ function drawerAt(atMs) {
     expenses,
     retraits,
     products,
-    expected: base + cashIn - acomptes - expenses - retraits,
+    productsCash,
+    expected: base + cashIn + productsCash - acomptes - expenses - retraits,
   };
 }
 
@@ -2453,10 +2492,11 @@ function renderDrawerCard() {
     </div>
     <div class="row"><span class="label">Départ : ${esc(startLabel)}</span><span class="value">${fmtEuroInt(s.base)}</span></div>
     <div class="row"><span class="label">+ Paiements en espèces</span><span class="value">+${fmtEuroInt(s.cashIn)}</span></div>
+    ${s.productsCash ? `<div class="row"><span class="label">+ Produits payés en espèces</span><span class="value">+${fmtEuroInt(s.productsCash)}</span></div>` : ""}
     <div class="row"><span class="label">− Acomptes</span><span class="value acompte-val">−${fmtEuroInt(s.acomptes)}</span></div>
     <div class="row"><span class="label">− Dépenses</span><span class="value expense-amt">−${fmtEuroInt(s.expenses)}</span></div>
     <div class="row"><span class="label">− Retraits</span><span class="value">−${fmtEuroInt(s.retraits)}</span></div>
-    ${s.products ? `<p class="drawer-note">Produits vendus (${fmtEuroInt(s.products)}) non inclus : ajoutez-les s'ils ont été payés en espèces.</p>` : ""}
+    ${s.products ? `<p class="drawer-note">Produits enregistrés sans mode de paiement (${fmtEuroInt(s.products)}) non inclus : ajoutez-les s'ils ont été payés en espèces.</p>` : ""}
     ${formHtml}
     ${retraits ? `<div class="cmp-section-label">Retraits</div>${retraits}` : ""}
     ${history ? `<div class="cmp-section-label">Comptages</div>${history}` : ""}
@@ -3088,9 +3128,21 @@ function handleAction(action, data) {
     case "confirm-product": {
       const amt = parseInt(state.amount, 10);
       if (!amt || amt <= 0) return;
+      state.view = "product-payment";
+      render();
+      break;
+    }
+    case "back-product-amount":
+      state.view = "product-amount";
+      render();
+      break;
+    case "pay-product": {
+      const amt = parseInt(state.amount, 10);
+      const method = data.method === "CB" ? "CB" : "ESP";
+      if (!amt || amt <= 0) return;
       if (state.editingId) {
-        localUpdate(state.editingId, { amount: amt });
-        showToast(`Product updated: ${amt}€`);
+        localUpdate(state.editingId, { amount: amt, method });
+        showToast(`Product updated: ${amt}€ ${method}`);
         state.editingId = null;
         state.tab = "stats";
       } else {
@@ -3100,10 +3152,11 @@ function handleAction(action, data) {
           type: "product",
           barber: state.selectedBarber,
           amount: amt,
+          method,
           ts,
         });
         showToast(
-          `Product sold: ${state.selectedBarber} ${amt}€${
+          `Product sold: ${state.selectedBarber} ${amt}€ ${method}${
             state.entryDate ? " (backdated)" : ""
           }`
         );
