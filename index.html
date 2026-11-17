@@ -23,9 +23,33 @@
     // Register the service worker so the app is installable and works offline.
     if ("serviceWorker" in navigator) {
       window.addEventListener("load", () => {
-        navigator.serviceWorker.register("sw.js").catch((err) => {
+        navigator.serviceWorker.register("sw.js").then((reg) => {
+          // An installed app resumed from the background never navigates, so
+          // the browser wouldn't look for a new version: check on every return.
+          document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "visible") reg.update().catch(() => {});
+          });
+        }).catch((err) => {
           console.warn("SW register failed", err);
         });
+      });
+
+      // When a new version takes over, reload once so the new look shows
+      // right away, but never in the middle of typing an amount.
+      // Queued entries are kept in localStorage, so nothing is lost.
+      const hadController = !!navigator.serviceWorker.controller;
+      let reloading = false;
+      const reloadWhenIdle = () => {
+        if (reloading) return;
+        if (typeof isMidEntry === "function" && isMidEntry()) {
+          setTimeout(reloadWhenIdle, 3000);
+          return;
+        }
+        reloading = true;
+        location.reload();
+      };
+      navigator.serviceWorker.addEventListener("controllerchange", () => {
+        if (hadController) reloadWhenIdle();
       });
     }
 

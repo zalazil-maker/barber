@@ -1,4 +1,4 @@
-const CACHE = "barber-v25";
+const CACHE = "barber-v26";
 const ASSETS = [
   "./",
   "./index.html",
@@ -14,7 +14,9 @@ self.addEventListener("install", (e) => {
     caches.open(CACHE).then((c) =>
       Promise.all(
         ASSETS.map((a) =>
-          c.add(a).catch(() => {
+          // cache: "reload" skips the browser's HTTP cache, so a new version
+          // never precaches the previous styles.css / app.js by mistake.
+          c.add(new Request(a, { cache: "reload" })).catch(() => {
             /* skip failed precache entries */
           })
         )
