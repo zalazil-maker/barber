@@ -836,3 +836,25 @@ header h1 {
 
 .rdv-push-state { flex: 1; min-width: 150px; font-size: 13px; color: #94a3b8; line-height: 1.45; }
 .rdv-push-state.on { color: #4ade80; font-weight: 600; }
+
+/* Cash in drawer (Analytics) */
+.drawer-card { margin-bottom: 12px; border-left: 4px solid #22c55e; }
+.drawer-actions, .drawer-form { display: flex; gap: 8px; margin-top: 12px; }
+.drawer-actions .rdv-btn { flex: 1; width: auto; padding: 12px; font-size: 14px; }
+.drawer-form .rdv-key-input { flex: 1; min-width: 0; background: #0f172a; font-size: 16px; padding: 12px; }
+.drawer-form .rdv-btn { flex: 0 0 auto; width: auto; padding: 12px 14px; }
+.drawer-note { font-size: 12px; color: #94a3b8; margin: 8px 0 0; line-height: 1.4; }
+.drawer-hist {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 8px;
+  align-items: center;
+  font-size: 12px;
+  color: #cbd5e1;
+  padding: 6px 0;
+  border-bottom: 1px solid #334155;
+}
+.drawer-hist:last-child { border-bottom: none; }
+.drawer-hist span:first-child { color: #94a3b8; }
+.drawer-card .row { gap: 10px; }
+.drawer-card .row .value { white-space: nowrap; }

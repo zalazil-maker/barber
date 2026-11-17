@@ -91,7 +91,8 @@ const state = {
   sync: "idle", // idle | syncing | offline
   events: loadCache(),
   pending: loadPending(),
-  data: { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [], products: [] },
+  data: { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [], products: [], retraits: [], drawerCounts: [] },
+  drawerForm: null, // null | "retrait" | "count" — the open input on the cash-drawer card
 };
 
 // The admin code is typed once per device and kept locally, so it never has to
@@ -158,7 +159,7 @@ function savePending() {
 }
 
 function rebuildData() {
-  const d = { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [], products: [] };
+  const d = { entries: [], checkins: [], expenses: [], deleted: [], acomptes: [], products: [], retraits: [], drawerCounts: [] };
   for (const e of state.events) {
     const time = Number(e.ts);
     if (e.deleted_at) {
@@ -195,6 +196,12 @@ function rebuildData() {
       d.acomptes.push({ id: e.id, barber: e.barber, amount: e.amount, time, createdAt: e.created_at || null });
     else if (e.type === "product")
       d.products.push({ id: e.id, barber: e.barber, amount: e.amount, time, createdAt: e.created_at || null });
+    // Cash the owner takes out of the drawer, and actual counts of the drawer.
+    // Neither is shop income or an expense, so Stats, Analytics and the PDFs ignore them.
+    else if (e.type === "retrait")
+      d.retraits.push({ id: e.id, amount: Number(e.amount) || 0, time });
+    else if (e.type === "drawer_count")
+      d.drawerCounts.push({ id: e.id, amount: Number(e.amount) || 0, time });
   }
   state.data = d;
 }
@@ -305,7 +312,7 @@ async function syncNow() {
 
 // Background syncs re-draw the screen; never do that while someone is typing
 // in a text field, or the keyboard closes and the cursor jumps.
-const TYPING_FIELDS = ["camp-subject", "camp-message", "camp-test-to", "rdv-key-input"];
+const TYPING_FIELDS = ["camp-subject", "camp-message", "camp-test-to", "rdv-key-input", "drawer-amount"];
 
 function isMidEntry() {
   const ae = typeof document !== "undefined" ? document.activeElement : null;
@@ -2160,9 +2167,13 @@ function renderStats() {
           ? `${e.barber} — Acompte`
           : e.type === "product"
           ? `${e.barber} — Product`
+          : e.type === "retrait"
+          ? "Retrait (caisse)"
+          : e.type === "drawer_count"
+          ? "Comptage caisse"
           : e.barber || e.type;
       const amt =
-        e.type === "expense" || e.type === "acompte"
+        e.type === "expense" || e.type === "acompte" || e.type === "retrait"
           ? `-${e.amount}€`
           : e.amount != null
           ? `${e.amount}€`
@@ -2334,6 +2345,124 @@ function fmtPct(now, prev) {
   return `${sign}${p.toFixed(0)}%`;
 }
 
+// ── Cash in drawer ─────────────────────────────────────────────────────────
+// What should physically be in the drawer at `atMs`. It starts from the most
+// recent count before that moment (the counted amount is the truth); with no
+// count yet, from an empty drawer on the 1st of the current month. Advances
+// and expenses are assumed to be paid from the drawer. Products have no
+// cash/card choice, so they are reported separately rather than guessed.
+function drawerAt(atMs) {
+  const counts = state.data.drawerCounts
+    .filter((c) => c.time < atMs)
+    .sort((a, b) => a.time - b.time);
+  const last = counts[counts.length - 1] || null;
+  const m = new Date(atMs);
+  const monthStart = new Date(m.getFullYear(), m.getMonth(), 1).getTime();
+  const from = last ? last.time : monthStart;
+  const inWindow = (t) => (last ? t > from : t >= from) && t < atMs;
+  const sum = (arr) => arr.filter((x) => inWindow(x.time)).reduce((s, x) => s + (Number(x.amount) || 0), 0);
+
+  const cashIn = sum(state.data.entries.filter((e) => e.method === "ESP"));
+  const acomptes = sum(state.data.acomptes);
+  const expenses = sum(state.data.expenses);
+  const retraits = sum(state.data.retraits);
+  const products = sum(state.data.products);
+  const base = last ? last.amount : 0;
+  return {
+    last,
+    from,
+    base,
+    cashIn,
+    acomptes,
+    expenses,
+    retraits,
+    products,
+    expected: base + cashIn - acomptes - expenses - retraits,
+  };
+}
+
+function fmtWhen(ms) {
+  return new Date(ms).toLocaleString(undefined, {
+    weekday: "short",
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function renderDrawerCard() {
+  const now = Date.now();
+  const s = drawerAt(now + 1);
+  const startLabel = s.last
+    ? `Comptage du ${fmtWhen(s.last.time)}`
+    : `1er ${new Date(s.from).toLocaleDateString(undefined, { month: "long" })} (caisse vide)`;
+
+  // Each count compared with what the drawer should have held just before it.
+  const history = [...state.data.drawerCounts]
+    .sort((a, b) => b.time - a.time)
+    .slice(0, 5)
+    .map((c) => {
+      const exp = drawerAt(c.time).expected;
+      const diff = c.amount - exp;
+      const cls = Math.abs(diff) < 1 ? "match" : diff > 0 ? "over" : "under";
+      return `<div class="drawer-hist">
+        <span>${esc(fmtWhen(c.time))}</span>
+        <span>compté <b>${fmtEuroInt(c.amount)}</b> · attendu ${fmtEuroInt(exp)}</span>
+        <span class="mini-status ${cls}">${diff >= 0 ? "+" : ""}${fmtEuroInt(diff)}</span>
+        <button class="del-btn" data-action="drawer-delete" data-id="${esc(c.id)}" title="Supprimer">×</button>
+      </div>`;
+    })
+    .join("");
+
+  const retraits = [...state.data.retraits]
+    .filter((r) => r.time > s.from - 1)
+    .sort((a, b) => b.time - a.time)
+    .map(
+      (r) => `<div class="drawer-hist">
+        <span>${esc(fmtWhen(r.time))}</span>
+        <span>retrait <b>−${fmtEuroInt(r.amount)}</b></span>
+        <span></span>
+        <button class="del-btn" data-action="drawer-delete" data-id="${esc(r.id)}" title="Supprimer">×</button>
+      </div>`
+    )
+    .join("");
+
+  const form = state.drawerForm;
+  const formHtml = form
+    ? `<div class="drawer-form">
+        <input id="drawer-amount" class="rdv-key-input" type="number" inputmode="numeric"
+          min="0" step="1" placeholder="${form === "count" ? "Montant compté (€)" : "Montant retiré (€)"}">
+        <button class="rdv-btn primary" data-action="drawer-save">OK</button>
+        <button class="rdv-btn" data-action="drawer-cancel">Annuler</button>
+      </div>
+      <p class="drawer-note">${
+        form === "count"
+          ? "Comptez tous les billets et pièces de la caisse. Ce montant devient le nouveau point de départ."
+          : "Argent sorti de la caisse qui n'est ni un acompte ni une dépense (par exemple ramené à la maison)."
+      }</p>`
+    : `<div class="drawer-actions">
+        <button class="rdv-btn" data-action="drawer-open" data-value="retrait">Retrait</button>
+        <button class="rdv-btn primary" data-action="drawer-open" data-value="count">Compter la caisse</button>
+      </div>`;
+
+  return `<div class="stat-card drawer-card">
+    <div class="hl-row">
+      <div class="hl-label">💵 Espèces attendues en caisse</div>
+      <div class="hl-value">${fmtEuroInt(s.expected)}</div>
+    </div>
+    <div class="row"><span class="label">Départ : ${esc(startLabel)}</span><span class="value">${fmtEuroInt(s.base)}</span></div>
+    <div class="row"><span class="label">+ Paiements en espèces</span><span class="value">+${fmtEuroInt(s.cashIn)}</span></div>
+    <div class="row"><span class="label">− Acomptes</span><span class="value acompte-val">−${fmtEuroInt(s.acomptes)}</span></div>
+    <div class="row"><span class="label">− Dépenses</span><span class="value expense-amt">−${fmtEuroInt(s.expenses)}</span></div>
+    <div class="row"><span class="label">− Retraits</span><span class="value">−${fmtEuroInt(s.retraits)}</span></div>
+    ${s.products ? `<p class="drawer-note">Produits vendus (${fmtEuroInt(s.products)}) non inclus : ajoutez-les s'ils ont été payés en espèces.</p>` : ""}
+    ${formHtml}
+    ${retraits ? `<div class="cmp-section-label">Retraits</div>${retraits}` : ""}
+    ${history ? `<div class="cmp-section-label">Comptages</div>${history}` : ""}
+  </div>`;
+}
+
 function renderAnalytics() {
   const { period, scope, offset } = state.analytics;
   const range = getAnalyticsRange();
@@ -2428,6 +2557,9 @@ function renderAnalytics() {
 
   // ----- Render -----
   let html = `<div class="screen">`;
+
+  // Cash in the drawer right now — shop-wide, independent of the period below.
+  html += renderDrawerCard();
 
   // Period pills
   html += `<div class="pills">`;
@@ -2752,6 +2884,52 @@ function handleAction(action, data) {
       loadRDV(true);
       break;
     }
+    case "drawer-open":
+      state.drawerForm = data.value === "count" ? "count" : "retrait";
+      render();
+      setTimeout(() => {
+        const el = document.getElementById("drawer-amount");
+        if (el) el.focus();
+      }, 0);
+      break;
+    case "drawer-cancel":
+      state.drawerForm = null;
+      render();
+      break;
+    case "drawer-save": {
+      const el = document.getElementById("drawer-amount");
+      const raw = el ? el.value.trim() : "";
+      const amount = Math.round(Number(raw));
+      const isCount = state.drawerForm === "count";
+      // Whole euros only: the amount column is an integer.
+      if (raw === "" || !Number.isFinite(amount) || amount < 0 || (!isCount && amount === 0)) {
+        showToast("Montant invalide");
+        return;
+      }
+      localInsert({ id: newId(), type: isCount ? "drawer_count" : "retrait", amount, ts: Date.now() });
+      state.drawerForm = null;
+      if (isCount) {
+        const exp = drawerAt(Date.now()).expected;
+        const diff = amount - exp;
+        showToast(
+          Math.abs(diff) < 1
+            ? `Caisse juste : ${amount} €`
+            : `Compté ${amount} € · attendu ${Math.round(exp)} € · écart ${diff > 0 ? "+" : ""}${Math.round(diff)} €`
+        );
+      } else {
+        showToast(`Retrait de ${amount} € enregistré`);
+      }
+      render();
+      syncNow();
+      break;
+    }
+    case "drawer-delete":
+      if (confirm("Supprimer cette ligne ?")) {
+        localDelete(data.id);
+        render();
+        syncNow();
+      }
+      break;
     case "camp-preview":
       campaignPreview();
       break;
