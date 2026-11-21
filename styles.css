@@ -249,6 +249,8 @@ header h1 {
   gap: 12px;
   margin-bottom: 12px;
 }
+/* Odd number of barber cards: the last one spans the full width. */
+.summary > .stat-card:last-child:nth-child(odd):not(:first-child) { grid-column: 1 / -1; }
 
 .row .acompte-val { color: var(--acompte); }
 .row .product-val { color: var(--product); }
@@ -303,6 +305,9 @@ header h1 {
 .barber-box:active { transform: scale(0.97); }
 .barber-box.sami { background: linear-gradient(155deg, #4f8ff7 0%, #2563eb 45%, #1e3a8a 100%); }
 .barber-box.amine { background: linear-gradient(155deg, #f37cbc 0%, #db2777 45%, #831843 100%); }
+.barber-box.fateh { background: linear-gradient(155deg, #fdba74 0%, #ea580c 45%, #7c2d12 100%); }
+/* A third barber gets a full-width row under the first two. */
+.barbers > .barber-box:nth-child(3):last-child { grid-column: 1 / -1; aspect-ratio: auto; min-height: 120px; }
 
 .secondary-actions {
   display: grid;
@@ -760,6 +765,7 @@ header h1 {
 .cmp-fill { height: 100%; border-radius: 999px; transition: width 0.3s; }
 .cmp-fill.sami { background: linear-gradient(90deg, #2563eb, var(--momo)); }
 .cmp-fill.amine { background: linear-gradient(90deg, #db2777, var(--amine)); }
+.cmp-fill.fateh { background: linear-gradient(90deg, #ea580c, #fdba74); }
 .cmp-val { text-align: right; font-weight: 700; font-size: 13px; }
 
 /* Cash in drawer */
@@ -991,6 +997,7 @@ header h1 {
 }
 .rdv-barber.sami { background: rgba(96, 165, 250, 0.16); color: #93c5fd; }
 .rdv-barber.amine { background: rgba(244, 114, 182, 0.16); color: #f9a8d4; }
+.rdv-barber.fateh { background: rgba(251, 146, 60, 0.16); color: #fdba74; }
 .rdv-service { font-size: 14px; color: var(--text-2); }
 .rdv-price { margin-left: auto; font-size: 14px; font-weight: 800; color: var(--cash); }
 .rdv-name { font-size: 15px; font-weight: 700; }

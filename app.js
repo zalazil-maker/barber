@@ -1,16 +1,22 @@
-const BARBERS = ["Momo", "Amine"]; // Currently-employed barbers (used for input UI + Check-In)
+const BARBERS = ["Momo", "Amine", "Fateh"]; // Barbers shown in the app (input UI, Caisse, Check-In)
+// Barbers customers can book on the website. Fateh is in the app only.
+const SITE_BARBERS = ["Momo", "Amine"];
 // Sami was fired and replaced by Momo. Historical rows before this date still
 // belong to Sami and should be shown as such in past-week Stats / Analytics.
 const MOMO_START = new Date(2026, 6, 2).getTime(); // July 2, 2026
+// Fateh appears in Stats / Analytics / PDFs from this date, never in older ranges.
+const FATEH_START = new Date(2026, 10, 21).getTime(); // November 21, 2026
 
 function barbersForRange(startMs, endMs) {
   const list = [];
   if (startMs < MOMO_START) list.push("Sami");
   if (endMs > MOMO_START) list.push("Momo");
   list.push("Amine");
+  if (endMs > FATEH_START) list.push("Fateh");
   return list;
 }
 function barberColorClass(name) {
+  if (name === "Fateh") return "fateh";
   return name === "Amine" ? "amine" : "sami";
 }
 // Set by the setup: the Cloudflare worker address that safely talks to Neon.
@@ -1051,14 +1057,17 @@ function render() {
   attachHandlers();
 }
 
+function barberButtons(action) {
+  return `<div class="barbers">${BARBERS.map(
+    (b) => `<button class="barber-box ${barberColorClass(b)}" data-action="${action}" data-barber="${b}">${b}</button>`
+  ).join("")}</div>`;
+}
+
 function renderRegister() {
   if (state.view === "home") {
     return `<div class="screen">
       <h2>Who served the customer?</h2>
-      <div class="barbers">
-        <button class="barber-box sami" data-action="select-barber" data-barber="Momo">Momo</button>
-        <button class="barber-box amine" data-action="select-barber" data-barber="Amine">Amine</button>
-      </div>
+      ${barberButtons("select-barber")}
       <div class="secondary-actions">
         <button class="depense-btn" data-action="start-expense">Dépense</button>
         <button class="acompte-btn" data-action="start-acompte">Acompte</button>
@@ -1071,10 +1080,7 @@ function renderRegister() {
     return `<div class="screen">
       <button class="back-btn" data-action="back-home">&larr; Back</button>
       <h2>Product sold — by who?</h2>
-      <div class="barbers">
-        <button class="barber-box sami" data-action="select-product-barber" data-barber="Momo">Momo</button>
-        <button class="barber-box amine" data-action="select-product-barber" data-barber="Amine">Amine</button>
-      </div>
+      ${barberButtons("select-product-barber")}
     </div>`;
   }
 
@@ -1121,10 +1127,7 @@ function renderRegister() {
     return `<div class="screen">
       <button class="back-btn" data-action="back-home">&larr; Back</button>
       <h2>Acompte — Who's taking it?</h2>
-      <div class="barbers">
-        <button class="barber-box sami" data-action="select-acompte-barber" data-barber="Momo">Momo</button>
-        <button class="barber-box amine" data-action="select-acompte-barber" data-barber="Amine">Amine</button>
-      </div>
+      ${barberButtons("select-acompte-barber")}
     </div>`;
   }
 
@@ -1711,7 +1714,7 @@ function renderRDV() {
 
     html += `<div class="rdv-section-title">Fermer la journée</div>
       <div class="rdv-blockrow">`;
-    for (const b of BARBERS) {
+    for (const b of SITE_BARBERS) {
       html += `<button class="rdv-btn" data-action="rdv-block-day" data-barber="${esc(b)}">${esc(b)} en repos</button>`;
     }
     html += `<button class="rdv-btn" data-action="rdv-block-day" data-barber="ALL">Salon fermé</button>`;
@@ -2843,11 +2846,12 @@ function renderAnalytics() {
     cmpHtml += `</div>`;
     html += cmpHtml;
 
-    // Head-to-head sentences only when exactly 2 barbers in the range
-    if (scopeBarbers.length === 2) {
-      const [aName, bName] = scopeBarbers;
-      const a = buckets[0].bucket;
-      const b = buckets[1].bucket;
+    // Head-to-head sentences only when exactly 2 barbers worked in the range
+    const active = buckets.filter((x) => x.bucket.customers > 0);
+    if (active.length === 2) {
+      const [aName, bName] = active.map((x) => x.name);
+      const a = active[0].bucket;
+      const b = active[1].bucket;
       const lines = [];
       if (a.revenue !== b.revenue) {
         const lead = a.revenue > b.revenue ? aName : bName;
