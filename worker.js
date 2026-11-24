@@ -40,7 +40,7 @@ const DEFAULT_SERVICES = [
     description: "Coupe + Barbe + Soin Visage — l'offre de fin d'année de Luxury Barber, pour les fêtes et les proches.",
     needsSkinType: true },
   { id: "cheveux", label: "Cheveux", price: 18.0, planity: 20.0, duration: 30, icon: "ico-ciseaux",
-    image: "/cuts/classique.jpg",
+    image: "/tarifs/cheveux.jpg",
     description: "Coupe homme soignée, adaptée à votre style. Dégradé, classique ou moderne — le résultat est toujours net." },
   { id: "traitement_complet", label: "Le traitement complet !", price: 32.99, planity: null, duration: 60, icon: "ico-poteau",
     image: "/tarifs/traitement.jpg",
@@ -72,6 +72,7 @@ const REPLACED_DESCRIPTIONS = [
 // Same idea for photos: previous default image path per service.
 const REPLACED_IMAGES = [
   ["noel", "/cuts/taper.jpg"],
+  ["cheveux", "/cuts/classique.jpg"],
 ];
 
 // Products sold at the shop. Prices are optional — the panel lets the owner
