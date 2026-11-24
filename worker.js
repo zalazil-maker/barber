@@ -39,6 +39,9 @@ const DEFAULT_SERVICES = [
     image: "/cuts/taper.jpg",
     description: "Coupe + Barbe + Soin Visage — l'offre de fin d'année de Luxury Barber, pour les fêtes et les proches.",
     needsSkinType: true },
+  { id: "cheveux", label: "Cheveux", price: 18.0, planity: 20.0, duration: 30, icon: "ico-ciseaux",
+    image: "/cuts/classique.jpg",
+    description: "Coupe homme soignée, adaptée à votre style. Dégradé, classique ou moderne — le résultat est toujours net." },
   { id: "traitement_complet", label: "Le traitement complet !", price: 32.99, planity: null, duration: 60, icon: "ico-poteau",
     image: "/tarifs/traitement.jpg",
     description: "Coupe, barbe, shampooing et soins visage — pensé pour les grandes occasions : mariage, remise de diplôme, vacances, ou simplement pour prendre soin de vous.",
@@ -48,9 +51,15 @@ const DEFAULT_SERVICES = [
 // Services that were seeded on an earlier deploy and are no longer offered.
 // Soft-deleted on startup so history (bookings, invoices) still references
 // them without them showing up in the tarif list or the booking form.
-// Entries added for the Noël promo so only the two bundle offers show —
-// remove the four ids below to bring the standalone services back.
-const RETIRED_SERVICE_IDS = ["enfant", "barbe", "cheveux", "both", "etudiant"];
+// Entries added for the Noël promo so only the bundle offers show —
+// remove the three ids below to bring the standalone services back.
+const RETIRED_SERVICE_IDS = ["enfant", "barbe", "both", "etudiant"];
+
+// Services that must be active in the store. Covers the case where a
+// service was previously in RETIRED_SERVICE_IDS and got active=false,
+// so simply removing it from the retired list isn't enough — this
+// flips the row back to active on the next startup.
+const RESTORED_SERVICE_IDS = ["cheveux"];
 
 // Products sold at the shop. Prices are optional — the panel lets the owner
 // set them later. `image` is a path served by the website (public/products/).
@@ -603,6 +612,9 @@ export default {
       // Soft-delete so past bookings still resolve their label.
       for (const id of RETIRED_SERVICE_IDS) {
         await q("update services set active=false where id=$1 and active=true", [id]);
+      }
+      for (const id of RESTORED_SERVICE_IDS) {
+        await q("update services set active=true where id=$1 and active=false", [id]);
       }
       // Same top-up pattern as services: insert any missing default without
        // overwriting an existing row.
