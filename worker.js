@@ -35,7 +35,7 @@ const DEFAULT_BARBERS = ["Momo", "Amine"];
 // the website (public/cuts/ for the coupes photos, public/tarifs/ for
 // the treatment shot).
 const DEFAULT_SERVICES = [
-  { id: "noel", label: "Offre NOËL", price: 22.99, planity: null, duration: 60, icon: "ico-poteau",
+  { id: "noel", label: "Offre NOËL", price: 21.99, planity: null, duration: 60, icon: "ico-poteau",
     image: "/cuts/taper.jpg",
     description: "Coupe + Barbe + Soin Visage — l'offre de fin d'année de Luxury Barber, pour les fêtes et les proches.",
     needsSkinType: true },
