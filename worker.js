@@ -44,7 +44,7 @@ const DEFAULT_SERVICES = [
     description: "Coupe homme soignée, adaptée à votre style. Dégradé, classique ou moderne — le résultat est toujours net." },
   { id: "traitement_complet", label: "Le traitement complet !", price: 32.99, planity: null, duration: 60, icon: "ico-poteau",
     image: "/tarifs/traitement.jpg",
-    description: "Coupe, barbe, shampooing et soins visage — pensé pour les grandes occasions : mariage, remise de diplôme, vacances, ou simplement pour prendre soin de vous.",
+    description: "Coupe, barbe, shampooing, massage du visage et soin profond de la peau — pour les grandes occasions ou simplement pour prendre soin de vous. Vous repartirez plus beau, plus détendu et plus confiant.",
     needsSkinType: true },
 ];
 
@@ -60,6 +60,12 @@ const RETIRED_SERVICE_IDS = ["enfant", "barbe", "both", "etudiant"];
 // so simply removing it from the retired list isn't enough — this
 // flips the row back to active on the next startup.
 const RESTORED_SERVICE_IDS = ["cheveux"];
+
+// Previous default descriptions, so an updated default can replace the
+// old text in an existing row without overwriting an /admin edit.
+const REPLACED_DESCRIPTIONS = [
+  ["traitement_complet", "Coupe, barbe, shampooing et soins visage — pensé pour les grandes occasions : mariage, remise de diplôme, vacances, ou simplement pour prendre soin de vous."],
+];
 
 // Products sold at the shop. Prices are optional — the panel lets the owner
 // set them later. `image` is a path served by the website (public/products/).
@@ -615,6 +621,18 @@ export default {
       }
       for (const id of RESTORED_SERVICE_IDS) {
         await q("update services set active=true where id=$1 and active=false", [id]);
+      }
+      // Refresh descriptions that changed in DEFAULT_SERVICES — but only
+      // when the row still holds the previous default, so text the owner
+      // rewrote in /admin is left alone.
+      for (const [id, oldText] of REPLACED_DESCRIPTIONS) {
+        const s = DEFAULT_SERVICES.find((x) => x.id === id);
+        if (s) {
+          await q(
+            "update services set description=$2 where id=$1 and description=$3",
+            [id, s.description, oldText]
+          );
+        }
       }
       // Same top-up pattern as services: insert any missing default without
        // overwriting an existing row.
