@@ -53,7 +53,9 @@ const DEFAULT_SERVICES = [
 // them without them showing up in the tarif list or the booking form.
 // Entries added for the Noël promo so only the bundle offers show —
 // remove the three ids below to bring the standalone services back.
-const RETIRED_SERVICE_IDS = ["enfant", "barbe", "both", "etudiant"];
+// "tudiants" is the Étudiant offer created in /admin — the id cleaner
+// drops accented letters, so "étudiants" was stored without its "é".
+const RETIRED_SERVICE_IDS = ["enfant", "barbe", "both", "etudiant", "tudiants"];
 
 // Services that must be active in the store. Covers the case where a
 // service was previously in RETIRED_SERVICE_IDS and got active=false,
