@@ -35,15 +35,10 @@ const DEFAULT_BARBERS = ["Momo", "Amine"];
 // the website (public/cuts/ for the coupes photos, public/tarifs/ for
 // the treatment shot).
 const DEFAULT_SERVICES = [
-  { id: "cheveux", label: "Cheveux", price: 18.0, planity: 20.0, duration: 30, icon: "ico-ciseaux",
-    image: "/cuts/classique.jpg",
-    description: "Coupe homme soignée, adaptée à votre style. Dégradé, classique ou moderne — le résultat est toujours net." },
-  { id: "barbe", label: "Barbe", price: 9.99, planity: 12.0, duration: 30, icon: "ico-rasoir",
-    image: "/cuts/barbe.jpg",
-    description: "Taille et contours de barbe à la tondeuse et au rasoir, finition serviette chaude. Net, précis, rapide." },
-  { id: "both", label: "Cheveux + Barbe", price: 23.99, planity: 26.0, duration: 30, icon: "ico-poteau",
+  { id: "noel", label: "Offre NOËL", price: 22.99, planity: null, duration: 60, icon: "ico-poteau",
     image: "/cuts/taper.jpg",
-    description: "Le combo complet — coupe homme et taille de barbe soignée pour un look parfaitement abouti de la tête aux pieds." },
+    description: "Coupe + Barbe + Soin Visage — l'offre de fin d'année de Luxury Barber, pour les fêtes et les proches.",
+    needsSkinType: true },
   { id: "traitement_complet", label: "Le traitement complet !", price: 32.99, planity: null, duration: 60, icon: "ico-poteau",
     image: "/tarifs/traitement.jpg",
     description: "Coupe, barbe, shampooing et soins visage — pensé pour les grandes occasions : mariage, remise de diplôme, vacances, ou simplement pour prendre soin de vous.",
@@ -53,7 +48,9 @@ const DEFAULT_SERVICES = [
 // Services that were seeded on an earlier deploy and are no longer offered.
 // Soft-deleted on startup so history (bookings, invoices) still references
 // them without them showing up in the tarif list or the booking form.
-const RETIRED_SERVICE_IDS = ["enfant"];
+// Entries added for the Noël promo so only the two bundle offers show —
+// remove the four ids below to bring the standalone services back.
+const RETIRED_SERVICE_IDS = ["enfant", "barbe", "cheveux", "both", "etudiant"];
 
 // Products sold at the shop. Prices are optional — the panel lets the owner
 // set them later. `image` is a path served by the website (public/products/).
