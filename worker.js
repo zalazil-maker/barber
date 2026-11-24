@@ -36,7 +36,7 @@ const DEFAULT_BARBERS = ["Momo", "Amine"];
 // the treatment shot).
 const DEFAULT_SERVICES = [
   { id: "noel", label: "Offre NOËL", price: 21.99, planity: null, duration: 60, icon: "ico-poteau",
-    image: "/cuts/taper.jpg",
+    image: "/tarifs/noel.jpg",
     description: "Coupe + Barbe + Soin Visage — l'offre de fin d'année de Luxury Barber, pour les fêtes et les proches.",
     needsSkinType: true },
   { id: "cheveux", label: "Cheveux", price: 18.0, planity: 20.0, duration: 30, icon: "ico-ciseaux",
@@ -67,6 +67,11 @@ const RESTORED_SERVICE_IDS = ["cheveux"];
 // old text in an existing row without overwriting an /admin edit.
 const REPLACED_DESCRIPTIONS = [
   ["traitement_complet", "Coupe, barbe, shampooing et soins visage — pensé pour les grandes occasions : mariage, remise de diplôme, vacances, ou simplement pour prendre soin de vous."],
+];
+
+// Same idea for photos: previous default image path per service.
+const REPLACED_IMAGES = [
+  ["noel", "/cuts/taper.jpg"],
 ];
 
 // Products sold at the shop. Prices are optional — the panel lets the owner
@@ -633,6 +638,15 @@ export default {
           await q(
             "update services set description=$2 where id=$1 and description=$3",
             [id, s.description, oldText]
+          );
+        }
+      }
+      for (const [id, oldImage] of REPLACED_IMAGES) {
+        const s = DEFAULT_SERVICES.find((x) => x.id === id);
+        if (s && s.image) {
+          await q(
+            "update services set image=$2 where id=$1 and image=$3",
+            [id, s.image, oldImage]
           );
         }
       }
